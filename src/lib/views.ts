@@ -184,3 +184,113 @@ export async function listDomains(
   ]);
   return { rows, counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) };
 }
+
+// ---------- Insights: which combinations win, and where ----------
+
+export const RANGES = { "24h": "24 hours", "7d": "7 days", "30d": "30 days", all: "100 years" } as const;
+export type Range = keyof typeof RANGES;
+
+export type PatternStat = {
+  pattern: string;
+  tried: number; // checks MailTester answered for this combination
+  accepted: number;
+  rejected: number;
+  catch_all: number;
+  unverifiable: number;
+  finds: number; // people whose final email used this pattern
+  avg_checks: number | null; // checks spent on a person found with this pattern
+};
+
+export type Insights = {
+  range: Range;
+  kpi: { people: number; found: number; catch_all: number; checks: number; accepted: number; rejected: number };
+  patterns: PatternStat[];
+  checksToFind: { checks: number; n: number }[];
+  outcomes: { status: string; reason: string | null; n: number }[];
+  answers: { verdict: string; message: string | null; n: number }[];
+  daily: { day: string; checks: number; found: number; people: number }[];
+  byTld: { tld: string; pattern: string; n: number }[];
+  bySize: { bucket: string; pattern: string; n: number }[];
+  domains: { status: string; n: number }[];
+};
+
+export async function insights(db: Db, range: Range): Promise<Insights> {
+  const since = `now() - interval '${RANGES[range]}'`; // fixed whitelist, never user text
+  const SIZE = `case when s.n = 1 then '1' when s.n <= 5 then '2–5' when s.n <= 20 then '6–20' else '21+' end`;
+  const [[kpi], patterns, finds, checksToFind, outcomes, answers, daily, byTld, bySize, domains] = await Promise.all([
+    db.query<Insights["kpi"]>(
+      `select
+         (select count(*)::int from job_rows where status not in ('pending','invalid_input') and updated_at > ${since}) as people,
+         (select count(*)::int from job_rows where status = 'found' and updated_at > ${since}) as found,
+         (select count(*)::int from job_rows where status = 'catch_all' and updated_at > ${since}) as catch_all,
+         (select count(*)::int from verifications where verdict <> 'rate_limited' and created_at > ${since}) as checks,
+         (select count(*)::int from verifications where verdict = 'valid' and created_at > ${since}) as accepted,
+         (select count(*)::int from verifications where verdict = 'invalid' and created_at > ${since}) as rejected`,
+    ),
+    db.query<Omit<PatternStat, "finds" | "avg_checks">>(
+      `select pattern,
+              count(*) filter (where verdict <> 'rate_limited')::int as tried,
+              count(*) filter (where verdict = 'valid')::int as accepted,
+              count(*) filter (where verdict = 'invalid')::int as rejected,
+              count(*) filter (where verdict = 'catch_all')::int as catch_all,
+              count(*) filter (where verdict = 'retry')::int as unverifiable
+       from verifications where pattern is not null and created_at > ${since} group by pattern`,
+    ),
+    db.query<{ pattern: string; finds: number; avg_checks: number }>(
+      `select pattern, count(*)::int as finds, round(avg(checks_used), 2)::float as avg_checks
+       from job_rows where status = 'found' and pattern is not null and updated_at > ${since} group by pattern`,
+    ),
+    db.query<{ checks: number; n: number }>(
+      `select least(checks_used, 12) as checks, count(*)::int as n from job_rows
+       where status = 'found' and updated_at > ${since} group by 1 order by 1`,
+    ),
+    db.query<{ status: string; reason: string | null; n: number }>(
+      `select status, reason, count(*)::int as n from job_rows
+       where status not in ('pending') and updated_at > ${since} group by 1, 2 order by 3 desc`,
+    ),
+    db.query<{ verdict: string; message: string | null; n: number }>(
+      `select verdict, nullif(message, '') as message, count(*)::int as n from verifications
+       where created_at > ${since} group by 1, 2 order by 3 desc limit 14`,
+    ),
+    db.query<{ day: string; checks: number; found: number; people: number }>(
+      `with d as (select generate_series(date_trunc('day', now()) - interval '13 days', date_trunc('day', now()), interval '1 day') as day)
+       select d.day,
+              (select count(*)::int from verifications v where v.created_at >= d.day and v.created_at < d.day + interval '1 day' and v.verdict <> 'rate_limited') as checks,
+              (select count(*)::int from job_rows r where r.status = 'found' and r.updated_at >= d.day and r.updated_at < d.day + interval '1 day') as found,
+              (select count(*)::int from job_rows r where r.status not in ('pending','invalid_input') and r.updated_at >= d.day and r.updated_at < d.day + interval '1 day') as people
+       from d order by d.day`,
+    ),
+    db.query<{ tld: string; pattern: string; n: number }>(
+      `select coalesce(substring(domain from '\\.((?:co|com|org|net|ac|gov|edu)\\.[a-z]{2})$'), substring(domain from '\\.([a-z0-9-]+)$')) as tld,
+              pattern, count(*)::int as n
+       from job_rows where status = 'found' and pattern is not null and updated_at > ${since}
+       group by 1, 2`,
+    ),
+    db.query<{ bucket: string; pattern: string; n: number }>(
+      `with s as (select domain, count(*) as n from job_rows where status <> 'invalid_input' group by domain)
+       select ${SIZE} as bucket, r.pattern, count(*)::int as n
+       from job_rows r join s on s.domain = r.domain
+       where r.status = 'found' and r.pattern is not null and r.updated_at > ${since}
+       group by 1, 2`,
+    ),
+    db.query<{ status: string; n: number }>(`select status, count(*)::int as n from domains group by 1 order by 2 desc`),
+  ]);
+
+  const findMap = new Map(finds.map((f) => [f.pattern, f]));
+  const names = new Set([...patterns.map((p) => p.pattern), ...finds.map((f) => f.pattern)]);
+  const merged: PatternStat[] = [...names].map((name) => {
+    const p = patterns.find((x) => x.pattern === name);
+    const f = findMap.get(name);
+    return {
+      pattern: name,
+      tried: p?.tried ?? 0,
+      accepted: p?.accepted ?? 0,
+      rejected: p?.rejected ?? 0,
+      catch_all: p?.catch_all ?? 0,
+      unverifiable: p?.unverifiable ?? 0,
+      finds: f?.finds ?? 0,
+      avg_checks: f?.avg_checks ?? null,
+    };
+  });
+  return { range, kpi, patterns: merged, checksToFind, outcomes, answers, daily, byTld, bySize, domains };
+}

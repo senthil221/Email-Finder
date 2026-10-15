@@ -37,7 +37,8 @@ export type CheckOutcome = {
   spent: number;
 };
 
-export type Checker = (email: string) => Promise<CheckOutcome>;
+/** `pattern` is which of the 9 combinations this address is (logged for the Insights page). */
+export type Checker = (email: string, pattern?: string) => Promise<CheckOutcome>;
 
 export const STALE_DAYS = 60;
 export const MAX_FAILED_SCOUTS = 2;
@@ -70,7 +71,7 @@ export async function findPerson(
   let stuck = 0;
   let rejected = 0;
   for (const c of list) {
-    const r = await check(c.email);
+    const r = await check(c.email, c.pattern);
     used += r.spent;
     switch (r.verdict) {
       case "valid":

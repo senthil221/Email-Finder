@@ -480,3 +480,28 @@ button { font: inherit; color: inherit; }
 /* Small screens: keep KPI tiles to the number and its note */
 @media (max-width: 700px) { .kpi .spark { display: none; } .kpi-value { font-size: 26px; } }
 .eyebrow .live-dot { margin: 0 4px; }
+
+/* ---------- Insights ---------- */
+.heat { border-collapse: separate; border-spacing: 3px; width: 100%; font-size: 11.5px; }
+.lb td { padding: 0 10px; } .lb th { padding: 0 10px; }
+.heat th { font-weight: 500; color: var(--faint); font-size: 10.5px; white-space: nowrap; padding: 0 4px 4px; text-align: center; font-family: var(--font-mono); }
+.heat tbody th { text-align: left; color: var(--ink-soft); font-family: var(--font-mono); padding-right: 10px; }
+.heat td { padding: 0; }
+.heat .r { text-align: right; padding-left: 8px; }
+.heat .cell { display: grid; place-items: center; height: 30px; min-width: 34px; border-radius: 6px; font-variant-numeric: tabular-nums; font-weight: 500; transition: transform 120ms var(--ease); }
+.heat .cell:hover { transform: scale(1.06); box-shadow: 0 0 0 1px var(--line-strong); }
+.lb td { height: 48px; }
+.lb .rank { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; font-size: 11.5px; font-weight: 600; background: var(--surface-3); color: var(--muted); }
+.lb tr:nth-child(1) .rank { background: var(--accent); color: var(--accent-ink); box-shadow: 0 0 14px -2px var(--accent); }
+.lb tr:nth-child(2) .rank, .lb tr:nth-child(3) .rank { background: var(--ok-soft); color: var(--ok-ink); }
+.meter { display: flex; align-items: center; gap: 8px; min-width: 120px; }
+.meter .track { flex: 1; height: 7px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+.meter .track i { display: block; height: 100%; border-radius: 0 4px 4px 0; transition: width 1s var(--ease); }
+.meter b { width: 44px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.order { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.order .tag { height: 24px; font-size: 11.5px; }
+.order .tag.up { box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 50%, transparent) inset; color: var(--ok-ink); }
+.order .tag.down { box-shadow: 0 0 0 1px color-mix(in srgb, var(--bad) 40%, transparent) inset; color: var(--bad-ink); }
+.order .arrow { color: var(--faint); font-size: 11px; }
+.g-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .g-3 { grid-template-columns: 1fr; } }

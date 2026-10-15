@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { AlertTriangle, ArrowRight, Check, Globe, History, LayoutDashboard, ScanSearch, Search, UploadCloud, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, BarChart3, Check, Globe, History, LayoutDashboard, ScanSearch, Search, UploadCloud, X } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
 import { usePoll } from "./usePoll";
 import { Ring } from "./ui";
@@ -13,6 +13,7 @@ const NAV = [
   { href: "/find", label: "Live finder", icon: ScanSearch, match: (p: string) => p.startsWith("/find"), kbd: "K" },
   { href: "/upload", label: "Bulk upload", icon: UploadCloud, match: (p: string) => p.startsWith("/upload") },
   { href: "/jobs", label: "History", icon: History, match: (p: string) => p.startsWith("/jobs") },
+  { href: "/insights", label: "Insights", icon: BarChart3, match: (p: string) => p.startsWith("/insights") },
   { href: "/domains", label: "Domains", icon: Globe, match: (p: string) => p.startsWith("/domains") },
 ];
 
@@ -147,6 +148,7 @@ const TITLES: [RegExp, string][] = [
   [/^\/jobs\/./, "Job"],
   [/^\/jobs/, "History"],
   [/^\/domains/, "Domains"],
+  [/^\/insights/, "Insights"],
 ];
 
 export function Shell({ children }: { children: ReactNode }) {

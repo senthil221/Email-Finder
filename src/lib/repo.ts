@@ -252,14 +252,12 @@ export async function cachedVerdict(db: Db, email: string, days = 60): Promise<C
   return rows[0]?.verdict ?? null;
 }
 
-export async function recordVerification(db: Db, email: string, call: MtnCall) {
-  await db.query(`insert into verifications (email, verdict, code, message, raw) values ($1,$2,$3,$4,$5::jsonb)`, [
-    email,
-    call.verdict,
-    call.code,
-    call.message,
-    JSON.stringify(call.raw ?? null),
-  ]);
+export async function recordVerification(db: Db, email: string, call: MtnCall, pattern?: string) {
+  await db.query(
+    `insert into verifications (email, verdict, code, message, raw, pattern, domain)
+     values ($1,$2,$3,$4,$5::jsonb,$6,$7)`,
+    [email, call.verdict, call.code, call.message, JSON.stringify(call.raw ?? null), pattern ?? null, email.split("@")[1] ?? null],
+  );
 }
 
 /** MailTester calls (retries included) in the last 24 hours: the budget is a rolling window. */

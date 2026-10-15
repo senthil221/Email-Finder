@@ -50,7 +50,33 @@ create table if not exists verifications (
   raw jsonb,
   created_at timestamptz not null default now()
 );
+-- Which of the 9 combinations each check was, for the Insights page.
+alter table verifications add column if not exists pattern text;
+alter table verifications add column if not exists domain text;
 create index if not exists verifications_email on verifications (email, created_at desc);
+create index if not exists verifications_pattern on verifications (created_at, pattern) where pattern is not null;
+
+-- Backfill: checks logged before the pattern column existed get it from the
+-- person they were for. Only touches rows that still have no pattern.
+update verifications v set pattern = m.pattern, domain = m.domain
+from (
+  select distinct on (v2.id) v2.id, p.pattern, r.domain
+  from verifications v2
+  join job_rows r on r.domain = split_part(v2.email, '@', 2)
+  cross join lateral (values
+    ('first', r.first),
+    ('first.last', case when r.last <> '' then r.first || '.' || r.last end),
+    ('firstlast', case when r.last <> '' then r.first || r.last end),
+    ('flast', case when r.last <> '' then left(r.first, 1) || r.last end),
+    ('firstl', case when r.last <> '' then r.first || left(r.last, 1) end),
+    ('first.l', case when r.last <> '' then r.first || '.' || left(r.last, 1) end),
+    ('first_last', case when r.last <> '' then r.first || '_' || r.last end),
+    ('fl', case when r.last <> '' then left(r.first, 1) || left(r.last, 1) end),
+    ('f.last', case when r.last <> '' then left(r.first, 1) || '.' || r.last end)
+  ) as p(pattern, local)
+  where v2.pattern is null and p.local = split_part(v2.email, '@', 1)
+) m
+where v.id = m.id;
 create index if not exists verifications_created on verifications (created_at);
 
 create table if not exists worker_status (

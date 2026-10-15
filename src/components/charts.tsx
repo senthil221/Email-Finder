@@ -137,3 +137,128 @@ export function Spark({ values, color = "var(--signal)", w = 84, h = 28 }: { val
     </svg>
   );
 }
+
+/** Single-series columns with a value on each cap and a hover tooltip. */
+export function ColumnChart({
+  data,
+  color = "var(--ok)",
+  height = 170,
+  format = (v: number) => n(v),
+  tip,
+}: {
+  data: { label: string; value: number }[];
+  color?: string;
+  height?: number;
+  format?: (v: number) => string;
+  tip?: (d: { label: string; value: number }, i: number) => string;
+}) {
+  const [ref, width] = useWidth<HTMLDivElement>();
+  const [hover, setHover] = useState<number | null>(null);
+  const pad = { t: 18, b: 22, l: 4, r: 4 };
+  const h = height - pad.t - pad.b;
+  const max = Math.max(1, ...data.map((d) => d.value));
+  const slot = data.length ? (width - pad.l - pad.r) / data.length : 0;
+  const bw = Math.min(24, Math.max(4, slot * 0.62));
+  const showAll = slot > 26;
+  // Thin the x labels so they never collide (always keep the last one).
+  const step = Math.max(1, Math.ceil(44 / Math.max(1, slot)));
+  return (
+    <div className="chart" ref={ref} onPointerLeave={() => setHover(null)}>
+      {width > 0 && (
+        <svg height={height} role="img" aria-label={data.map((d) => `${d.label}: ${format(d.value)}`).join(", ")}>
+          <line className="grid-line" x1={pad.l} x2={width - pad.r} y1={pad.t + h} y2={pad.t + h} />
+          {data.map((d, i) => {
+            const x = pad.l + slot * i + (slot - bw) / 2;
+            const bh = Math.max(d.value ? 2 : 0, (d.value / max) * h);
+            const y = pad.t + h - bh;
+            const r = Math.min(4, bh);
+            return (
+              <g key={d.label} onPointerEnter={() => setHover(i)} style={{ cursor: "default" }}>
+                <rect x={pad.l + slot * i} y={pad.t} width={slot} height={h} fill="transparent" />
+                <path
+                  d={`M${x},${pad.t + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + bw - r}Q${x + bw},${y} ${x + bw},${y + r}V${pad.t + h}Z`}
+                  fill={color}
+                  opacity={hover === null || hover === i ? 1 : 0.45}
+                  style={{ transition: "opacity 120ms" }}
+                />
+                {(showAll || hover === i || d.value === max) && d.value > 0 && (
+                  <text className="axis" x={x + bw / 2} y={y - 5} textAnchor="middle" style={{ fill: "var(--ink-soft)" }}>
+                    {format(d.value)}
+                  </text>
+                )}
+                {((i % step === 0 && data.length - 1 - i >= step) || i === data.length - 1) && (
+                  <text className="axis" x={x + bw / 2} y={height - 5} textAnchor="middle">
+                    {d.label}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      )}
+      {hover !== null && data[hover] && (
+        <div className="tip" style={{ left: pad.l + slot * hover + slot / 2, top: pad.t + h - (data[hover].value / max) * h }}>
+          <div className="t-row">
+            <i style={{ background: color }} />
+            <span>{tip ? tip(data[hover], hover) : `${data[hover].label}: ${format(data[hover].value)}`}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Rows x columns grid; each cell is the share of its row, shaded in one hue. */
+export function Heatmap({
+  rows,
+  cols,
+  value,
+  colLabel = (c: string) => c,
+}: {
+  rows: string[];
+  cols: string[];
+  value: (row: string, col: string) => number;
+  colLabel?: (c: string) => string;
+}) {
+  const totals = Object.fromEntries(rows.map((r) => [r, cols.reduce((s, c) => s + value(r, c), 0)]));
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table className="heat">
+        <thead>
+          <tr>
+            <th />
+            {cols.map((c) => (
+              <th key={c}>{colLabel(c)}</th>
+            ))}
+            <th className="r">Finds</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r}>
+              <th>{r}</th>
+              {cols.map((c) => {
+                const v = value(r, c);
+                const share = totals[r] ? v / totals[r] : 0;
+                return (
+                  <td key={c} title={`${r} · ${colLabel(c)}: ${v} of ${totals[r]} finds (${Math.round(share * 100)}%)`}>
+                    <span
+                      className="cell"
+                      style={{
+                        background: `color-mix(in srgb, var(--ok) ${Math.round(8 + share * 82)}%, var(--surface-3))`,
+                        color: share > 0.45 ? "#fff" : share > 0 ? "var(--ink)" : "var(--faint)",
+                      }}
+                    >
+                      {v ? `${Math.round(share * 100)}%` : "·"}
+                    </span>
+                  </td>
+                );
+              })}
+              <td className="r num muted">{n(totals[r])}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}

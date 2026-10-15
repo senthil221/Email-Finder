@@ -68,7 +68,7 @@ export function startWorker(o: WorkerOptions) {
     },
     spendBudget,
     cacheGet: (email) => repo.cachedVerdict(db, email),
-    record: (email, call) => repo.recordVerification(db, email, call),
+    record: (email, call, pattern) => repo.recordVerification(db, email, call, pattern),
     checkStop: async () => {
       if (stopping) throw new PauseError("shutting down");
       if (Date.now() < pauseUntil) throw new PauseError("paused");

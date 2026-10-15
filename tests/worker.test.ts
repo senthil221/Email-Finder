@@ -153,5 +153,37 @@ describe("live views on a real schema", () => {
     expect((await listLookups(db)).total).toBe(1);
     expect((await listDomains(db, { status: "valid" })).rows[0]).toMatchObject({ domain: "b2bdrive.net", people: 1, found: 1 });
     expect(await recentVerifications(db, 5)).toHaveLength(2);
+
+    // Insights: every check is logged with its pattern.
+    const { insights } = await import("@/lib/views");
+    const ins = await insights(db, "7d");
+    const fl = ins.patterns.find((p) => p.pattern === "first.last");
+    const first = ins.patterns.find((p) => p.pattern === "first");
+    expect(fl).toMatchObject({ tried: 1, accepted: 1, finds: 1, avg_checks: 2 });
+    expect(first).toMatchObject({ tried: 1, rejected: 1, finds: 0 });
+    expect(ins.kpi).toMatchObject({ people: 1, found: 1, checks: 2, accepted: 1, rejected: 1 });
+    expect(ins.byTld).toEqual([{ tld: "net", pattern: "first.last", n: 1 }]);
+    expect(ins.checksToFind).toEqual([{ checks: 2, n: 1 }]);
+    expect(ins.daily).toHaveLength(14);
+  });
+});
+
+describe("schema upgrade", () => {
+  it("backfills the pattern on checks logged before the column existed", async () => {
+    const { SCHEMA_SQL } = await import("@/lib/schema");
+    const pg = new PGlite();
+    await pg.exec(SCHEMA_SQL.split("-- Which of the 9 combinations")[0]); // the old schema
+    const { rows } = await pg.query<{ id: string }>(`insert into jobs (name) values ('t') returning id`);
+    await pg.query(`insert into job_rows (job_id, row_no, first, last, domain) values ($1, 1, 'rajiv', 'garg', 'twe-obt.com')`, [rows[0].id]);
+    await pg.exec(`insert into verifications (email, verdict) values
+      ('rajiv@twe-obt.com', 'invalid'), ('rajiv.garg@twe-obt.com', 'valid'), ('nobody@x.com', 'invalid')`);
+    await pg.exec(SCHEMA_SQL);
+    await pg.exec(SCHEMA_SQL); // safe to run on every start
+    const out = await pg.query(`select email, pattern, domain from verifications order by id`);
+    expect(out.rows).toEqual([
+      { email: "rajiv@twe-obt.com", pattern: "first", domain: "twe-obt.com" },
+      { email: "rajiv.garg@twe-obt.com", pattern: "first.last", domain: "twe-obt.com" },
+      { email: "nobody@x.com", pattern: null, domain: null },
+    ]);
   });
 });

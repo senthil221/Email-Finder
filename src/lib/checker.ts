@@ -24,7 +24,7 @@ export type CheckerDeps = {
   spendBudget: () => Promise<void>;
   cacheGet: (email: string) => Promise<CachedVerdict | null>;
   /** Every real call is logged (audit + cache). */
-  record: (email: string, call: MtnCall) => Promise<void>;
+  record: (email: string, call: MtnCall, pattern?: string) => Promise<void>;
   /** Throws PauseError if the work should stop (e.g. job cancelled). */
   checkStop?: () => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
@@ -45,7 +45,7 @@ export function createChecker(d: CheckerDeps): Checker {
   const pause = d.pauseProvider ?? (() => {});
   let transportStreak = 0; // shared by every check this worker makes
 
-  return async (email: string): Promise<CheckOutcome> => {
+  return async (email: string, pattern?: string): Promise<CheckOutcome> => {
     const cached = await d.cacheGet(email);
     if (cached) return { verdict: cached, spent: 0 };
 
@@ -58,7 +58,7 @@ export function createChecker(d: CheckerDeps): Checker {
       await d.spendBudget();
       await d.rateLimit();
       const call = await d.mtn(email);
-      await d.record(email, call);
+      await d.record(email, call, pattern);
 
       if (call.pauseMs) pause(call.pauseMs);
       if (call.verdict === "rate_limited") {
