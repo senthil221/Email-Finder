@@ -1,0 +1,214 @@
+import { describe, expect, it } from "vitest";
+import {
+  processDomain,
+  type CheckOutcome,
+  type DomainState,
+  type Person,
+  type PersonResult,
+} from "@/lib/engine";
+import { createChecker, FatalError, PauseError } from "@/lib/checker";
+import { candidates } from "@/lib/patterns";
+import type { MtnCall, Verdict } from "@/lib/mailtester";
+
+// A fake mail world: which domains are catch-all, which mailboxes exist.
+type World = { catchAll?: Set<string>; noMx?: Set<string>; boxes: Set<string>; stuck?: Set<string> };
+
+function fakeCheck(w: World) {
+  const calls: string[] = [];
+  const check = async (email: string): Promise<CheckOutcome> => {
+    calls.push(email);
+    const domain = email.split("@")[1];
+    if (w.noMx?.has(domain)) return { verdict: "no_mx", spent: 1 };
+    if (w.catchAll?.has(domain)) return { verdict: "catch_all", spent: 1 };
+    if (w.stuck?.has(email)) return { verdict: "unverified", spent: 2 };
+    return { verdict: w.boxes.has(email) ? "valid" : "invalid", spent: 1 };
+  };
+  return { check, calls };
+}
+
+const fresh = (domain: string): DomainState => ({ domain, status: "unknown", pattern: null, checkedAt: null });
+const p = (id: string, first: string, last: string): Person => ({ id, first, last });
+
+async function run(state: DomainState, people: Person[], w: World, now?: Date) {
+  const { check, calls } = fakeCheck(w);
+  const results: Record<string, PersonResult> = {};
+  const domainUpdates: DomainState[] = [];
+  const final = await processDomain({
+    state,
+    people,
+    check,
+    onResult: async (id, r) => {
+      results[id] = r;
+    },
+    onDomain: async (s) => {
+      domainUpdates.push(s);
+    },
+    now: now ? () => now : undefined,
+  });
+  return { final, results, calls, domainUpdates };
+}
+
+describe("processDomain", () => {
+  it("scout finds first.last, the rest start on that pattern (1 check each)", async () => {
+    const w = { boxes: new Set(["senthil.nathan@b2b.net", "ravi.kumar@b2b.net", "anu.priya@b2b.net"]) };
+    const { final, results, calls } = await run(
+      fresh("b2b.net"),
+      [p("1", "senthil", "nathan"), p("2", "ravi", "kumar"), p("3", "anu", "priya")],
+      w,
+    );
+    expect(results["1"]).toMatchObject({ status: "found", email: "senthil.nathan@b2b.net", checksUsed: 2 });
+    expect(results["2"]).toMatchObject({ status: "found", email: "ravi.kumar@b2b.net", checksUsed: 1 });
+    expect(results["3"]).toMatchObject({ status: "found", checksUsed: 1 });
+    expect(final).toMatchObject({ status: "valid", pattern: "first.last" });
+    expect(calls).toHaveLength(4);
+  });
+
+  it("falls back to the other combinations when the known pattern fails for someone", async () => {
+    const w = { boxes: new Set(["senthil.nathan@b2b.net", "ravi@b2b.net"]) };
+    const { results } = await run(fresh("b2b.net"), [p("1", "senthil", "nathan"), p("2", "ravi", "kumar")], w);
+    expect(results["2"]).toMatchObject({ status: "found", email: "ravi@b2b.net", pattern: "first", checksUsed: 2 });
+  });
+
+  it("catch-all: one check, whole company parked", async () => {
+    const w = { catchAll: new Set(["big.com"]), boxes: new Set<string>() };
+    const people = [p("1", "a", "b"), p("2", "c", "d"), p("3", "e", "f")];
+    const { final, results, calls } = await run(fresh("big.com"), people, w);
+    expect(calls).toHaveLength(1);
+    expect(Object.values(results).map((r) => r.status)).toEqual(["catch_all", "catch_all", "catch_all"]);
+    expect(final.status).toBe("catch_all");
+  });
+
+  it("no MX: one check, everyone not_found with reason no_mx", async () => {
+    const w = { noMx: new Set(["dead.com"]), boxes: new Set<string>() };
+    const { results, calls } = await run(fresh("dead.com"), [p("1", "a", "b"), p("2", "c", "d")], w);
+    expect(calls).toHaveLength(1);
+    expect(results["2"]).toMatchObject({ status: "not_found", reason: "no_mx", checksUsed: 0 });
+  });
+
+  it("two failed scouts park the rest of the company", async () => {
+    const w = { boxes: new Set(["zed@x.com"]) };
+    const people = [p("1", "andrew", "deepak"), p("2", "ravi", "kumar"), p("3", "zed", "z")];
+    const { final, results, calls } = await run(fresh("x.com"), people, w);
+    expect(results["1"]).toMatchObject({ status: "not_found", reason: "all_rejected", checksUsed: 9 });
+    expect(results["2"]).toMatchObject({ status: "not_found", reason: "all_rejected" });
+    expect(results["3"]).toMatchObject({ status: "not_found", reason: "domain_parked", checksUsed: 0 });
+    expect(final.status).toBe("not_found");
+    expect(calls).toHaveLength(18);
+  });
+
+  it("a scout that fails once does not park the company if the next one wins", async () => {
+    const w = { boxes: new Set(["ravi.kumar@x.com", "anu.priya@x.com"]) };
+    const people = [p("1", "andrew", "deepak"), p("2", "ravi", "kumar"), p("3", "anu", "priya")];
+    const { results, final } = await run(fresh("x.com"), people, w);
+    expect(results["3"]).toMatchObject({ status: "found", checksUsed: 1 });
+    expect(final.status).toBe("valid");
+  });
+
+  it("unverifiable combinations give 'unverified', not 'not_found'", async () => {
+    const w = { boxes: new Set<string>(), stuck: new Set(["andrew@x.com"]) };
+    const { results } = await run(fresh("x.com"), [p("1", "andrew", "deepak")], w);
+    expect(results["1"]).toMatchObject({ status: "unverified", reason: "some_unverifiable", checksUsed: 10 });
+  });
+
+  it("a server that times out on everything costs 3 attempts per person, then the company is skipped", async () => {
+    // Every combination for these two people times out.
+    const all = (first: string, last: string) => candidates(first, last, "down.com").map((c) => c.email);
+    const stuck = new Set([...all("andrew", "deepak"), ...all("ravi", "kumar")]);
+    const people = [p("1", "andrew", "deepak"), p("2", "ravi", "kumar"), p("3", "anu", "priya")];
+    const { results, calls, final } = await run(fresh("down.com"), people, { boxes: new Set(), stuck });
+    expect(results["1"]).toMatchObject({ status: "unverified", checksUsed: 6 });
+    expect(results["2"]).toMatchObject({ status: "unverified", checksUsed: 6 });
+    expect(results["3"]).toMatchObject({ status: "unverified", reason: "server_unreachable", checksUsed: 0 });
+    expect(calls).toHaveLength(6);
+    expect(final.status).toBe("unknown"); // not remembered: a later upload tries again
+  });
+
+  it("a recent catch-all verdict parks everyone with zero checks", async () => {
+    const now = new Date("2026-10-15");
+    const state: DomainState = { domain: "big.com", status: "catch_all", pattern: null, checkedAt: new Date("2026-10-01") };
+    const { results, calls } = await run(state, [p("1", "a", "b")], { boxes: new Set() }, now);
+    expect(calls).toHaveLength(0);
+    expect(results["1"].status).toBe("catch_all");
+  });
+
+  it("a catch-all verdict older than 60 days is re-checked", async () => {
+    const now = new Date("2026-10-15");
+    const state: DomainState = { domain: "big.com", status: "catch_all", pattern: null, checkedAt: new Date("2026-06-01") };
+    const { results, calls } = await run(state, [p("1", "a", "b")], { boxes: new Set(["a@big.com"]) }, now);
+    expect(calls).toHaveLength(1);
+    expect(results["1"].status).toBe("found");
+  });
+
+  it("a domain known from an earlier upload starts on its saved pattern", async () => {
+    const state: DomainState = { domain: "x.com", status: "valid", pattern: "flast", checkedAt: new Date() };
+    const { results, calls } = await run(state, [p("1", "andrew", "deepak")], { boxes: new Set(["adeepak@x.com"]) });
+    expect(calls).toEqual(["adeepak@x.com"]);
+    expect(results["1"].checksUsed).toBe(1);
+  });
+});
+
+// ---------- checker ----------
+
+function scripted(answers: Record<string, Verdict[]>) {
+  const calls: string[] = [];
+  const mtn = async (email: string): Promise<MtnCall> => {
+    calls.push(email);
+    const v = answers[email]?.shift() ?? "invalid";
+    return { verdict: v, message: v, code: "", raw: {} };
+  };
+  return { mtn, calls };
+}
+
+const baseDeps = {
+  rateLimit: async () => {},
+  spendBudget: async () => {},
+  cacheGet: async () => null,
+  record: async () => {},
+  sleep: async () => {},
+};
+
+describe("createChecker", () => {
+  it("retries a timeout once, then gives the real answer", async () => {
+    const { mtn, calls } = scripted({ "a@x.com": ["retry", "valid"] });
+    const check = createChecker({ ...baseDeps, mtn });
+    expect(await check("a@x.com")).toEqual({ verdict: "valid", spent: 2 });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("gives up as unverified after the second failure", async () => {
+    const { mtn } = scripted({ "a@x.com": ["retry", "retry", "valid"] });
+    const check = createChecker({ ...baseDeps, mtn });
+    expect(await check("a@x.com")).toEqual({ verdict: "unverified", spent: 2 });
+  });
+
+  it("'Too Many Requests' is retried and not counted as a result", async () => {
+    const { mtn } = scripted({ "a@x.com": ["rate_limited", "rate_limited", "invalid"] });
+    const check = createChecker({ ...baseDeps, mtn });
+    expect(await check("a@x.com")).toEqual({ verdict: "invalid", spent: 1 });
+  });
+
+  it("uses the cache without calling MailTester", async () => {
+    const { mtn, calls } = scripted({});
+    const check = createChecker({ ...baseDeps, mtn, cacheGet: async () => "catch_all" });
+    expect(await check("a@x.com")).toEqual({ verdict: "catch_all", spent: 0 });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("throws FatalError on a bad key", async () => {
+    const { mtn } = scripted({ "a@x.com": ["fatal"] });
+    await expect(createChecker({ ...baseDeps, mtn })("a@x.com")).rejects.toBeInstanceOf(FatalError);
+  });
+
+  it("stops before calling when the daily budget is used up", async () => {
+    const { mtn, calls } = scripted({});
+    const check = createChecker({
+      ...baseDeps,
+      mtn,
+      spendBudget: async () => {
+        throw new PauseError("daily limit");
+      },
+    });
+    await expect(check("a@x.com")).rejects.toBeInstanceOf(PauseError);
+    expect(calls).toHaveLength(0);
+  });
+});

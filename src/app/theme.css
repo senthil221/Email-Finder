@@ -1,0 +1,160 @@
+/* Leadvance UI tokens: light in :root, dark in [data-theme=dark]. */
+:root {
+  color-scheme: light;
+
+  --bg: #f3f3f4;
+  --surface: #ffffff;
+  --surface-2: #fafafa;
+  --surface-3: #f4f4f5;
+  --surface-4: #e9e9eb;
+  --line: #e7e7e9;
+  --line-strong: #d6d6da;
+  --ink: #101012;
+  --ink-soft: #3a3a41;
+  --muted: #5e5e66;
+  --faint: #a1a1a9;
+  --on-solid: #ffffff;
+  --inverse: #18181b;
+
+  --brand: #2563eb;
+  --brand-ink: #1d4ed8;
+  --brand-soft: #eff5ff;
+  --brand-soft-2: #dbe7fe;
+  --brand-line: #bcd2fb;
+  --brand-solid: #2563eb;
+  --brand-solid-hover: #1d4ed8;
+
+  --info-soft: #f0f9ff;
+  --info-soft-2: #e0f2fe;
+  --info-line: #b9e3fb;
+  --info-ink: #0369a1;
+  --info-solid: #0284c7;
+  --info-solid-hover: #0369a1;
+
+  --success-soft: #ecfdf5;
+  --success-soft-2: #d1fae5;
+  --success-line: #a7f3d0;
+  --success-ink: #047857;
+  --success-solid: #059669;
+  --success-solid-hover: #047857;
+
+  --warning-soft: #fffbeb;
+  --warning-soft-2: #fef3c7;
+  --warning-line: #fde68a;
+  --warning-ink: #b45309;
+  --warning-solid: #d97706;
+  --warning-solid-hover: #b45309;
+
+  --danger-soft: #fff1f2;
+  --danger-soft-2: #ffe4e6;
+  --danger-line: #fecdd3;
+  --danger-ink: #be123c;
+  --danger-solid: #dc2626;
+  --danger-solid-hover: #b91c1c;
+
+  --violet-soft: #faf5ff;
+  --violet-soft-2: #f3e8ff;
+  --violet-line: #e3cffd;
+  --violet-ink: #7e22ce;
+  --violet-solid: #9333ea;
+  --violet-solid-hover: #7e22ce;
+
+
+  /* Table heads stay neutral; colour is kept for the data in the rows. */
+  --thead-bg: #fafafa;
+  --thead-ink: #74747c;
+  --thead-line: #e7e7e9;
+  --row-hover: #f7f7f8;
+  --row-selected: #eef3fd;
+
+  /* Navigation */
+  --nav-bg: #f3f3f4;
+  --nav-ink: #5e5e66;
+  --nav-hover: #e9e9eb;
+  --nav-active-bg: #e4e4e7;
+  --nav-active-ink: #101012;
+
+  --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.05), 0 2px 8px rgb(15 23 42 / 0.03);
+  --shadow-md: 0 18px 46px rgb(15 23 42 / 0.14);
+  --focus-ring: 0 0 0 3px rgb(37 99 235 / 0.18);
+}
+
+/* Dark: a near-black neutral, like the CRMs people work in all day. Surfaces
+   step up in lightness instead of relying on shadows; colours are lifted and
+   softened so they glow slightly without vibrating against the dark. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0a0a0b;
+  --surface: #111113;
+  --surface-2: #141416;
+  --surface-3: #18181b;
+  --surface-4: #1f1f23;
+  --line: #232327;
+  --line-strong: #2e2e33;
+  --ink: #ededef;
+  --ink-soft: #c4c4ca;
+  --muted: #a1a1aa;
+  --faint: #6b6b74;
+  --on-solid: #ffffff;
+  --inverse: #ededef;
+
+  --brand: #4f8cff;
+  --brand-ink: #8cb4ff;
+  --brand-soft: #111a2c;
+  --brand-soft-2: #16233d;
+  --brand-line: #284375;
+  --brand-solid: #3b7cf6;
+  --brand-solid-hover: #2f6ae0;
+
+  --info-soft: #0d1f2b;
+  --info-soft-2: #112c3d;
+  --info-line: #1b4861;
+  --info-ink: #6cc9f2;
+  --info-solid: #0ea5e9;
+  --info-solid-hover: #0284c7;
+
+  --success-soft: #0d211a;
+  --success-soft-2: #112e23;
+  --success-line: #1c4d37;
+  --success-ink: #5ed39a;
+  --success-solid: #16a34a;
+  --success-solid-hover: #15803d;
+
+  --warning-soft: #241b0c;
+  --warning-soft-2: #33260f;
+  --warning-line: #5a4316;
+  --warning-ink: #f2c35e;
+  --warning-solid: #d97706;
+  --warning-solid-hover: #b45309;
+
+  --danger-soft: #26121a;
+  --danger-soft-2: #351720;
+  --danger-line: #5e2633;
+  --danger-ink: #ff8c9c;
+  --danger-solid: #e5484d;
+  --danger-solid-hover: #c93a40;
+
+  --violet-soft: #1c152d;
+  --violet-soft-2: #271c40;
+  --violet-line: #45316e;
+  --violet-ink: #c6a8ff;
+  --violet-solid: #8b5cf6;
+  --violet-solid-hover: #7c4ee6;
+
+  --thead-bg: #111113;
+  --thead-ink: #7e7e87;
+  --thead-line: #232327;
+  --row-hover: #161618;
+  --row-selected: #141d30;
+
+  --nav-bg: #0a0a0b;
+  --nav-ink: #a1a1aa;
+  --nav-hover: #17171a;
+  --nav-active-bg: #1d1d21;
+  --nav-active-ink: #ededef;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 18px 46px rgb(0 0 0 / 0.55);
+  --focus-ring: 0 0 0 3px rgb(79 140 255 / 0.3);
+}

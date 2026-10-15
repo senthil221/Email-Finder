@@ -1,0 +1,10 @@
+node_modules
+.next
+dist
+.pglite
+.env
+.env*.local
+.claude
+.git
+tests
+*.log

@@ -1,0 +1,43 @@
+{
+  "name": "email-finder",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "vitest run",
+    "worker": "tsx src/worker/index.ts",
+    "worker:dev": "tsx --env-file=.env.local src/worker/index.ts",
+    "dev:db": "pglite-server --db=./.pglite --port=5433 --max-connections=20",
+    "dev:mtn": "tsx scripts/mock-mtn.ts",
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node22 --outfile=dist/worker.js --external:pg-native --log-level=warning"
+  },
+  "dependencies": {
+    "lucide-react": "^1.57.0",
+    "next": "16.4.1",
+    "papaparse": "^5.7.0",
+    "pg": "^8.23.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "@electric-sql/pglite-socket": "^0.2.13",
+    "@tailwindcss/turbopack": "^4",
+    "@types/node": "^24.19.2",
+    "@types/papaparse": "^5.5.2",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "esbuild": "^0.28.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.1",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.15",
+    "typescript": "^5",
+    "vitest": "^5.0.4"
+  }
+}
