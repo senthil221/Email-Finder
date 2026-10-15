@@ -6,7 +6,7 @@ import {
   type Person,
   type PersonResult,
 } from "@/lib/engine";
-import { createChecker, FatalError, PauseError } from "@/lib/checker";
+import { createChecker, createProviderGate, FatalError, PauseError } from "@/lib/checker";
 import { candidates } from "@/lib/patterns";
 import type { MtnCall, Verdict } from "@/lib/mailtester";
 
@@ -210,5 +210,57 @@ describe("createChecker", () => {
     });
     await expect(check("a@x.com")).rejects.toBeInstanceOf(PauseError);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("createChecker: provider pauses", () => {
+  it("a 429 pauses every caller, then the same address is retried", async () => {
+    const answers: MtnCall[] = [
+      { verdict: "rate_limited", message: "", code: "", raw: {}, pauseMs: 30_000 },
+      { verdict: "valid", message: "Accepted", code: "ok", raw: {} },
+    ];
+    const pauses: number[] = [];
+    const check = createChecker({ ...baseDeps, mtn: async () => answers.shift()!, pauseProvider: (ms) => pauses.push(ms) });
+    expect(await check("a@x.com")).toEqual({ verdict: "valid", spent: 1 });
+    expect(pauses).toEqual([30_000]);
+  });
+
+  it("network failures are retried up to 3 times, then unverified", async () => {
+    const fail: MtnCall = { verdict: "retry", message: "network", code: "", raw: null, transportFailure: true };
+    let n = 0;
+    const check = createChecker({ ...baseDeps, mtn: async () => (n++, fail), circuitAfter: 100 });
+    expect(await check("a@x.com")).toEqual({ verdict: "unverified", spent: 4 });
+    expect(n).toBe(4);
+  });
+
+  it("5 network failures in a row open a 5-minute circuit", async () => {
+    const fail: MtnCall = { verdict: "retry", message: "network", code: "", raw: null, transportFailure: true };
+    const pauses: number[] = [];
+    const check = createChecker({ ...baseDeps, mtn: async () => fail, pauseProvider: (ms) => pauses.push(ms) });
+    await check("a@x.com");
+    await check("b@x.com");
+    expect(pauses).toEqual([300_000]);
+  });
+});
+
+describe("createProviderGate", () => {
+  it("spaces starts and caps them per window", async () => {
+    const gate = createProviderGate({ max: 3, windowMs: 300, minSpacingMs: 40 });
+    const t0 = Date.now();
+    const times: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      await gate.take();
+      times.push(Date.now() - t0);
+    }
+    for (let i = 1; i < 3; i++) expect(times[i] - times[i - 1]).toBeGreaterThanOrEqual(35);
+    expect(times[3]).toBeGreaterThanOrEqual(295); // 4th waits for the window
+  });
+
+  it("pause holds every caller", async () => {
+    const gate = createProviderGate({ max: 100, windowMs: 1000 });
+    gate.pause(150);
+    const t0 = Date.now();
+    await gate.take();
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(140);
   });
 });

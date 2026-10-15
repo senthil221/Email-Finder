@@ -72,7 +72,7 @@ describe("worker on a real schema", () => {
       boxes: ["senthil.nathan@b2bdrive.net", "ravi.kumar@b2bdrive.net"],
       flaky: ["senthil@b2bdrive.net"],
     });
-    const w = startWorker({ db, mtn, concurrency: 3, rateMax: 1000, idleMs: 5, exitWhenIdle: true, sleep: tick, log: () => {} });
+    const w = startWorker({ db, mtn, concurrency: 3, rateMax: 1000, minSpacingMs: 0, idleMs: 5, exitWhenIdle: true, sleep: tick, log: () => {} });
     await w.done;
 
     const rows = await repo.listRows(db, jobId);
@@ -92,14 +92,14 @@ describe("worker on a real schema", () => {
 
     const dom = await repo.getDomain(db, "b2bdrive.net");
     expect(dom).toMatchObject({ status: "valid", pattern: "first.last" });
-    expect(await repo.checksToday(db)).toBe(calls.length);
+    expect(await repo.checksLast24h(db)).toBe(calls.length);
 
     // A second upload with the same company starts on the saved pattern and uses the cache.
     const job2 = await repo.createJob(db, { name: "again" });
     await repo.addRows(db, job2, 1, [row("Ravi", "Kumar", "b2bdrive.net"), row("Anu", "Priya", "bigcorp.com")]);
     await repo.setJobStatus(db, job2, "running");
     const before = calls.length;
-    await startWorker({ db, mtn, concurrency: 2, rateMax: 1000, idleMs: 5, exitWhenIdle: true, sleep: tick, log: () => {} }).done;
+    await startWorker({ db, mtn, concurrency: 2, rateMax: 1000, minSpacingMs: 0, idleMs: 5, exitWhenIdle: true, sleep: tick, log: () => {} }).done;
     expect(calls.length).toBe(before); // cache + fresh catch-all verdict: zero new checks
     expect(await repo.getJob(db, job2)).toMatchObject({ found: 1, catch_all: 1, pending: 0 });
   });
@@ -116,7 +116,7 @@ describe("worker on a real schema", () => {
     await repo.setJobStatus(db, limited, "running");
 
     const { mtn, calls } = fakeMtn({ catchAll: [], noMx: [], boxes: [] });
-    const w = startWorker({ db, mtn, concurrency: 1, rateMax: 1000, dailyLimit: 3, idleMs: 5, sleep: tick, log: () => {} });
+    const w = startWorker({ db, mtn, concurrency: 1, rateMax: 1000, minSpacingMs: 0, dailyLimit: 3, idleMs: 5, sleep: tick, log: () => {} });
     // Give it a moment, then stop.
     await new Promise((r) => setTimeout(r, 300));
     await w.stop();

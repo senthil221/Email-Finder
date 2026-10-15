@@ -31,7 +31,7 @@ describe("createMtnClient", () => {
     const fakeFetch = (async (url: string) => {
       calledUrl = url;
       return new Response(
-        JSON.stringify({ email: "a@b.com", code: "ok", message: "Accepted", mx: "mx.b.com" }),
+        JSON.stringify({ email: "a+x@b.com", code: "ok", message: "Accepted", mx: "mx.b.com" }),
       );
     }) as unknown as typeof fetch;
     const mtn = createMtnClient({ apiKey: "k&1", fetchImpl: fakeFetch });
@@ -46,5 +46,45 @@ describe("createMtnClient", () => {
     }) as unknown as typeof fetch;
     const r = await createMtnClient({ apiKey: "k", fetchImpl: failing })("a@b.com");
     expect(r.verdict).toBe("retry");
+  });
+});
+
+describe("createMtnClient: Prospect Sync's provider rules", () => {
+  const reply = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+    (async () => new Response(JSON.stringify(body), { status, headers })) as unknown as typeof fetch;
+
+  it("HTTP 429 pauses all calls for Retry-After (10s when missing)", async () => {
+    const a = await createMtnClient({ apiKey: "k", fetchImpl: reply(429, {}, { "retry-after": "30" }) })("a@b.com");
+    expect(a).toMatchObject({ verdict: "rate_limited", pauseMs: 30_000 });
+    const b = await createMtnClient({ apiKey: "k", fetchImpl: reply(429, {}) })("a@b.com");
+    expect(b.pauseMs).toBe(10_000);
+  });
+
+  it("a 5xx is an outage: retry, 60s pause, never a verdict", async () => {
+    const r = await createMtnClient({ apiKey: "k", fetchImpl: reply(503, {}) })("a@b.com");
+    expect(r).toMatchObject({ verdict: "retry", pauseMs: 60_000, transportFailure: true });
+  });
+
+  it("account problems pause for an hour", async () => {
+    const r = await createMtnClient({ apiKey: "k", fetchImpl: reply(200, { code: "ko", message: "Account suspended" }) })("a@b.com");
+    expect(r).toMatchObject({ verdict: "fatal", pauseMs: 3_600_000 });
+  });
+
+  it("a reply about a different address is not a result", async () => {
+    const r = await createMtnClient({
+      apiKey: "k",
+      fetchImpl: reply(200, { email: "other@b.com", code: "ko", message: "Rejected" }),
+    })("a@b.com");
+    expect(r).toMatchObject({ verdict: "retry", transportFailure: true });
+  });
+
+  it("strips quotes and braces pasted around the key", async () => {
+    let calledUrl = "";
+    const f = (async (url: string) => {
+      calledUrl = url;
+      return new Response(JSON.stringify({ email: "a@b.com", code: "ok", message: "Accepted" }));
+    }) as unknown as typeof fetch;
+    await createMtnClient({ apiKey: ' "{abc}" ', fetchImpl: f })("a@b.com");
+    expect(calledUrl.endsWith("&key=abc")).toBe(true);
   });
 });

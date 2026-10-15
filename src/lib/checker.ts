@@ -5,15 +5,21 @@ import type { MtnCall, MtnClient } from "./mailtester";
 
 /** Thrown to pause work (daily limit reached, job cancelled). Undecided people stay pending. */
 export class PauseError extends Error {}
-/** Thrown when MailTester refuses us (bad key, no credits). The worker stops. */
-export class FatalError extends Error {}
+/** Thrown when MailTester refuses us (bad key, no credits). The worker pauses for `pauseMs`. */
+export class FatalError extends Error {
+  constructor(message: string, readonly pauseMs = 3_600_000) {
+    super(message);
+  }
+}
 
 export type CachedVerdict = "valid" | "invalid" | "catch_all" | "no_mx";
 
 export type CheckerDeps = {
   mtn: MtnClient;
-  /** Waits for a slot under the per-10-seconds speed limit. */
+  /** Waits for a slot under the speed limit (and any provider pause). */
   rateLimit: () => Promise<void>;
+  /** Pause ALL MailTester calls for this long (429, outage, repeated network failures). */
+  pauseProvider?: (ms: number) => void;
   /** Reserves one check from today's budget; throws PauseError when used up. */
   spendBudget: () => Promise<void>;
   cacheGet: (email: string) => Promise<CachedVerdict | null>;
@@ -24,6 +30,9 @@ export type CheckerDeps = {
   sleep?: (ms: number) => Promise<void>;
   retryDelayMs?: number;
   maxRateLimitRetries?: number;
+  /** Network/protocol failures in a row (across all checks) that open the circuit. */
+  circuitAfter?: number;
+  circuitPauseMs?: number;
 };
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -32,6 +41,9 @@ export function createChecker(d: CheckerDeps): Checker {
   const sleep = d.sleep ?? defaultSleep;
   const retryDelay = d.retryDelayMs ?? 20_000;
   const maxRl = d.maxRateLimitRetries ?? 30;
+  const circuitAfter = d.circuitAfter ?? 5;
+  const pause = d.pauseProvider ?? (() => {});
+  let transportStreak = 0; // shared by every check this worker makes
 
   return async (email: string): Promise<CheckOutcome> => {
     const cached = await d.cacheGet(email);
@@ -39,6 +51,7 @@ export function createChecker(d: CheckerDeps): Checker {
 
     let spent = 0;
     let retried = false;
+    let transportRetries = 0;
     let rlHits = 0;
     for (;;) {
       if (d.checkStop) await d.checkStop();
@@ -47,17 +60,33 @@ export function createChecker(d: CheckerDeps): Checker {
       const call = await d.mtn(email);
       await d.record(email, call);
 
+      if (call.pauseMs) pause(call.pauseMs);
       if (call.verdict === "rate_limited") {
-        // Our own speed limit talking, not a verdict: back off and retry the same address.
+        // Our own speed limit talking, not a verdict: everyone waits, then retry the same address.
         rlHits++;
         if (rlHits > maxRl) return { verdict: "unverified", spent };
-        await sleep(Math.min(60_000, 2_000 * rlHits));
         continue;
       }
       spent++;
+
+      if (call.transportFailure) {
+        // Never a verdict about the address: retry (up to 3 times), and open the
+        // circuit if MailTester keeps failing for everyone.
+        transportStreak++;
+        if (transportStreak >= circuitAfter) {
+          pause(d.circuitPauseMs ?? 300_000);
+          transportStreak = 0;
+        }
+        if (transportRetries >= 3) return { verdict: "unverified", spent };
+        transportRetries++;
+        await sleep(Math.min(60_000, 1_000 * 2 ** transportRetries));
+        continue;
+      }
+      transportStreak = 0;
+
       switch (call.verdict) {
         case "fatal":
-          throw new FatalError(`MailTester refused the request: ${call.message || call.code}`);
+          throw new FatalError(`MailTester refused the request: ${call.message || call.code}`, call.pauseMs);
         case "valid":
         case "invalid":
         case "catch_all":
@@ -73,23 +102,48 @@ export function createChecker(d: CheckerDeps): Checker {
   };
 }
 
-/** Sliding-window limiter: at most `max` calls per `windowMs`. Shared by all workers in a process. */
-export function createRateLimiter(max: number, windowMs: number, now = () => Date.now()) {
+/**
+ * Pacing for all MailTester calls in this process, matching what Prospect Sync
+ * measured on the same plan: at most `max` starts per `windowMs` (22 per 10s)
+ * AND at least `minSpacingMs` between starts (450ms), so calls never burst.
+ * `pause(ms)` holds every caller (HTTP 429 cooldown, outage, circuit).
+ */
+export function createProviderGate(
+  o: { max: number; windowMs: number; minSpacingMs?: number },
+  now = () => Date.now(),
+) {
   const stamps: number[] = [];
+  const spacing = o.minSpacingMs ?? 0;
+  let pausedUntil = 0;
   let chain: Promise<void> = Promise.resolve();
-  return () => {
+
+  const take = () => {
     const next = chain.then(async () => {
       for (;;) {
         const t = now();
-        while (stamps.length && t - stamps[0] >= windowMs) stamps.shift();
-        if (stamps.length < max) {
-          stamps.push(t);
-          return;
+        if (t < pausedUntil) {
+          await defaultSleep(pausedUntil - t);
+          continue;
         }
-        await defaultSleep(windowMs - (t - stamps[0]) + 5);
+        while (stamps.length && t - stamps[0] >= o.windowMs) stamps.shift();
+        if (stamps.length >= o.max) {
+          await defaultSleep(o.windowMs - (t - stamps[0]) + 5);
+          continue;
+        }
+        const last = stamps[stamps.length - 1];
+        if (last !== undefined && t - last < spacing) {
+          await defaultSleep(spacing - (t - last));
+          continue;
+        }
+        stamps.push(t);
+        return;
       }
     });
     chain = next.catch(() => {});
     return next;
   };
+  const pause = (ms: number) => {
+    pausedUntil = Math.max(pausedUntil, now() + ms);
+  };
+  return { take, pause, pausedUntil: () => pausedUntil };
 }

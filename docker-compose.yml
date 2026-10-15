@@ -27,7 +27,7 @@ services:
       DATABASE_URL: postgresql://emailfinder:${POSTGRES_PASSWORD}@db:5432/emailfinder
       APP_USER: ${APP_USER:-admin}
       APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD in .env}
-      MTN_DAILY_LIMIT: ${MTN_DAILY_LIMIT:-200000}
+      MTN_DAILY_LIMIT: ${MTN_DAILY_LIMIT:-190000}
     depends_on:
       db: { condition: service_healthy }
     networks: [internal, traefik]
@@ -49,9 +49,11 @@ services:
     environment:
       DATABASE_URL: postgresql://emailfinder:${POSTGRES_PASSWORD}@db:5432/emailfinder
       MTN_API_KEY: ${MTN_API_KEY:-}
-      MTN_RATE_MAX: ${MTN_RATE_MAX:-23}
+      MTN_RATE_MAX: ${MTN_RATE_MAX:-22}
       MTN_RATE_WINDOW_MS: ${MTN_RATE_WINDOW_MS:-10000}
-      MTN_DAILY_LIMIT: ${MTN_DAILY_LIMIT:-200000}
+      MTN_MIN_SPACING_MS: ${MTN_MIN_SPACING_MS:-450}
+      MTN_TIMEOUT_MS: ${MTN_TIMEOUT_MS:-45000}
+      MTN_DAILY_LIMIT: ${MTN_DAILY_LIMIT:-190000}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-12}
       RETRY_DELAY_MS: ${RETRY_DELAY_MS:-20000}
     depends_on:

@@ -29,11 +29,16 @@ async function main() {
 
   const worker = startWorker({
     db,
-    mtn: createMtnClient({ apiKey: key, baseUrl: process.env.MTN_BASE_URL || undefined }),
+    mtn: createMtnClient({
+      apiKey: key,
+      baseUrl: process.env.MTN_BASE_URL || undefined,
+      timeoutMs: num("MTN_TIMEOUT_MS", 45_000),
+    }),
     concurrency,
-    rateMax: num("MTN_RATE_MAX", 23),
+    rateMax: num("MTN_RATE_MAX", 22),
     rateWindowMs: num("MTN_RATE_WINDOW_MS", 10_000),
-    dailyLimit: num("MTN_DAILY_LIMIT", 200_000),
+    minSpacingMs: num("MTN_MIN_SPACING_MS", 450),
+    dailyLimit: num("MTN_DAILY_LIMIT", 190_000),
     retryDelayMs: num("RETRY_DELAY_MS", 20_000),
   });
   console.log(`[worker] started with ${concurrency} parallel companies`);

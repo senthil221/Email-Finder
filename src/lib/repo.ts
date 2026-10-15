@@ -260,11 +260,10 @@ export async function recordVerification(db: Db, email: string, call: MtnCall) {
   ]);
 }
 
-/** MailTester calls made since midnight UTC. */
-export async function checksToday(db: Db): Promise<number> {
+/** MailTester calls (retries included) in the last 24 hours: the budget is a rolling window. */
+export async function checksLast24h(db: Db): Promise<number> {
   const [r] = await db.query<{ n: number }>(
-    `select count(*)::int as n from verifications
-     where created_at >= (date_trunc('day', now() at time zone 'UTC') at time zone 'UTC')`,
+    `select count(*)::int as n from verifications where created_at > now() - interval '24 hours'`,
   );
   return r.n;
 }

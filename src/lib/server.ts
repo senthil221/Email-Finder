@@ -28,5 +28,5 @@ export function bad(message: string, status = 400) {
 
 export function dailyLimit(): number {
   const v = Number(process.env.MTN_DAILY_LIMIT);
-  return Number.isFinite(v) && v > 0 ? v : 200_000;
+  return Number.isFinite(v) && v > 0 ? v : 190_000;
 }

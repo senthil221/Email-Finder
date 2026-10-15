@@ -3,7 +3,7 @@
 // and one daily budget.
 import type { Db } from "@/lib/db";
 import { processDomain } from "@/lib/engine";
-import { createChecker, createRateLimiter, FatalError, PauseError } from "@/lib/checker";
+import { createChecker, createProviderGate, FatalError, PauseError } from "@/lib/checker";
 import type { MtnClient } from "@/lib/mailtester";
 import * as repo from "@/lib/repo";
 
@@ -11,9 +11,12 @@ export type WorkerOptions = {
   db: Db;
   mtn: MtnClient;
   concurrency?: number;
-  rateMax?: number; // calls per window (Ultimate plan: 23 per 10s)
+  // Pace measured by Prospect Sync on the Ultimate plan: 22 starts per 10s,
+  // 450ms apart (25 per 10s got HTTP 429 within minutes).
+  rateMax?: number;
   rateWindowMs?: number;
-  dailyLimit?: number;
+  minSpacingMs?: number;
+  dailyLimit?: number; // MailTester calls per rolling 24 hours, retries included
   retryDelayMs?: number;
   batchSize?: number; // people per claim, so cancellations take effect quickly
   idleMs?: number;
@@ -25,18 +28,17 @@ export type WorkerOptions = {
 
 const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-function msUntilUtcMidnight(): number {
-  const now = new Date();
-  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 1);
-  return next - now.getTime();
-}
 
 export function startWorker(o: WorkerOptions) {
   const db = o.db;
   const log = o.log ?? ((m: string) => console.log(`[worker ${new Date().toISOString()}] ${m}`));
   const sleep = o.sleep ?? realSleep;
-  const dailyLimit = o.dailyLimit ?? 200_000;
-  const rateLimit = createRateLimiter(o.rateMax ?? 23, o.rateWindowMs ?? 10_000);
+  const dailyLimit = o.dailyLimit ?? 190_000;
+  const gate = createProviderGate({
+    max: o.rateMax ?? 22,
+    windowMs: o.rateWindowMs ?? 10_000,
+    minSpacingMs: o.minSpacingMs ?? 450,
+  });
 
   let stopping = false;
   let pauseUntil = 0;
@@ -44,22 +46,26 @@ export function startWorker(o: WorkerOptions) {
   let pauseMessage: string | null = null;
   let busy = 0;
 
-  // Daily budget, counted in memory and re-synced from the DB each new UTC day.
-  let day = "";
+  // Budget over a rolling 24 hours (like MailTester's own quota): counted in
+  // memory, re-synced from the verifications log every minute.
   let used = 0;
+  let syncedAt = 0;
   const spendBudget = async () => {
-    const today = new Date().toISOString().slice(0, 10);
-    if (today !== day) {
-      day = today;
-      used = await repo.checksToday(db);
+    if (Date.now() - syncedAt > 60_000) {
+      used = await repo.checksLast24h(db);
+      syncedAt = Date.now();
     }
-    if (used >= dailyLimit) throw new PauseError(`daily limit of ${dailyLimit} reached`);
+    if (used >= dailyLimit) throw new PauseError(`daily limit of ${dailyLimit} checks per 24 hours reached`);
     used++;
   };
 
   const checker = createChecker({
     mtn: o.mtn,
-    rateLimit,
+    rateLimit: gate.take,
+    pauseProvider: (ms) => {
+      gate.pause(ms);
+      if (ms >= 60_000) log(`MailTester paused for ${Math.round(ms / 1000)}s`);
+    },
     spendBudget,
     cacheGet: (email) => repo.cachedVerdict(db, email),
     record: (email, call) => repo.recordVerification(db, email, call),
@@ -89,15 +95,18 @@ export function startWorker(o: WorkerOptions) {
     } catch (e) {
       if (e instanceof PauseError) {
         if (!stopping && /daily limit/.test(e.message) && Date.now() >= pauseUntil) {
-          pauseUntil = Date.now() + msUntilUtcMidnight();
+          // The rolling window frees up gradually; look again in 10 minutes.
+          pauseUntil = Date.now() + 10 * 60_000;
+          syncedAt = 0;
           pauseReason = "paused_daily_limit";
-          pauseMessage = `${e.message}; resumes after midnight UTC`;
+          pauseMessage = `${e.message}; checking again every 10 minutes`;
           log(pauseMessage);
         }
       } else if (e instanceof FatalError) {
-        pauseUntil = Date.now() + 10 * 60_000;
+        pauseUntil = Date.now() + e.pauseMs;
+        gate.pause(e.pauseMs);
         pauseReason = "error";
-        pauseMessage = `${e.message} (retrying in 10 minutes)`;
+        pauseMessage = `${e.message} (retrying in ${Math.round(e.pauseMs / 60_000)} minutes)`;
         log(pauseMessage);
       } else {
         log(`error on ${state.domain}: ${(e as Error).stack ?? e}`);
@@ -132,7 +141,7 @@ export function startWorker(o: WorkerOptions) {
   const heartbeat = setInterval(() => {
     const state =
       Date.now() < pauseUntil && pauseReason ? pauseReason : busy > 0 ? "running" : "idle";
-    const msg = Date.now() < pauseUntil ? pauseMessage : `${used} checks used today (limit ${dailyLimit})`;
+    const msg = Date.now() < pauseUntil ? pauseMessage : `${used} checks in the last 24 hours (limit ${dailyLimit})`;
     repo.setWorkerStatus(db, state, msg).catch(() => {});
   }, 5_000);
 
