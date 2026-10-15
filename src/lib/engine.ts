@@ -8,9 +8,15 @@ export type DomainState = {
   status: DomainStatus;
   pattern: PatternId | null;
   checkedAt: Date | null;
+  /** When DNS last showed an MX record (free check, so MailTester is not asked about dead domains). */
+  mxCheckedAt?: Date | null;
+  /** Where people go when this domain fails: website redirect or .in/.com/.co.in twin. */
+  alt?: string | null;
+  altCheckedAt?: Date | null;
 };
 
-export type Person = { id: string; first: string; last: string };
+/** `movedFrom` is set once a person was restarted on an alternate domain (it only happens once). */
+export type Person = { id: string; first: string; last: string; movedFrom?: string | null };
 
 export type PersonStatus = "found" | "catch_all" | "not_found" | "unverified";
 
@@ -41,14 +47,17 @@ export type CheckOutcome = {
 export type Checker = (email: string, pattern?: string) => Promise<CheckOutcome>;
 
 export const STALE_DAYS = 60;
+/** DNS answers (MX present, alternate domain) are re-checked after this many days. */
+export const DNS_FRESH_DAYS = 7;
 export const MAX_FAILED_SCOUTS = 2;
 /** Stop a person after this many unverifiable answers in a row with no rejection yet. */
 export const MAX_STUCK_IN_A_ROW = 3;
 
-function isFresh(state: DomainState, now: Date): boolean {
-  if (!state.checkedAt) return false;
-  return now.getTime() - state.checkedAt.getTime() < STALE_DAYS * 86_400_000;
+function freshAt(at: Date | null | undefined, days: number, now: Date): boolean {
+  return !!at && now.getTime() - at.getTime() < days * 86_400_000;
 }
+
+const isFresh = (state: DomainState, now: Date) => freshAt(state.checkedAt, STALE_DAYS, now);
 
 const parked = (reason: Reason, status: PersonStatus = "not_found"): PersonResult => ({
   status,
@@ -107,20 +116,56 @@ export async function processDomain(args: {
   check: Checker;
   onResult: (personId: string, result: PersonResult) => Promise<void>;
   onDomain: (state: DomainState) => Promise<void>;
+  /** Free DNS lookup: true = has MX, false = none, null = could not tell. */
+  mx?: (domain: string) => Promise<boolean | null>;
+  /** Free lookup of another mail domain for this company (redirect or twin), null if none. */
+  findAlternate?: (domain: string) => Promise<string | null>;
+  /** Restart a person on another domain: they go back to pending there. */
+  onMove?: (personId: string, domain: string, checksUsed: number) => Promise<void>;
   now?: () => Date;
 }): Promise<DomainState> {
   const now = args.now ?? (() => new Date());
   let state = { ...args.state };
-  const setState = async (patch: Partial<DomainState>) => {
-    state = { ...state, ...patch, checkedAt: now() };
+  const patchState = async (patch: Partial<DomainState>) => {
+    state = { ...state, ...patch };
     await args.onDomain(state);
   };
+  const setState = (patch: Partial<DomainState>) => patchState({ ...patch, checkedAt: now() });
 
   // A catch-all / no-MX / parked verdict older than STALE_DAYS gets re-checked.
   // A fresh one parks everyone below without spending checks.
   if (state.status !== "valid" && state.status !== "unknown" && !isFresh(state, now())) {
     state = { ...state, status: "unknown" };
   }
+
+  // Before spending anything on an unproven company: does it have an MX record at all?
+  if (state.status === "unknown" && args.mx && !freshAt(state.mxCheckedAt, DNS_FRESH_DAYS, now())) {
+    const hasMx = await args.mx(state.domain);
+    if (hasMx === false) await setState({ status: "no_mx", pattern: null });
+    else if (hasMx === true) await patchState({ mxCheckedAt: now() });
+  }
+
+  const alternate = async (): Promise<string | null> => {
+    if (!args.findAlternate) return null;
+    if (!freshAt(state.altCheckedAt, DNS_FRESH_DAYS, now())) {
+      let alt: string | null;
+      try {
+        alt = await args.findAlternate(state.domain);
+      } catch {
+        return null; // not remembered: try again next time
+      }
+      await patchState({ alt: alt && alt !== state.domain ? alt : null, altCheckedAt: now() });
+    }
+    return state.alt ?? null;
+  };
+  /** Restart a person on the company's other domain, once. False if there is none. */
+  const moveAway = async (person: Person, checksUsed: number): Promise<boolean> => {
+    if (person.movedFrom || !args.onMove) return false;
+    const alt = await alternate();
+    if (!alt) return false;
+    await args.onMove(person.id, alt, checksUsed);
+    return true;
+  };
 
   let failedScouts = 0;
   let stuckScouts = 0;
@@ -136,17 +181,20 @@ export async function processDomain(args: {
       continue;
     }
     if (state.status === "no_mx") {
-      await args.onResult(person.id, parked("no_mx"));
+      if (!(await moveAway(person, 0))) await args.onResult(person.id, parked("no_mx"));
       continue;
     }
     if (state.status === "not_found") {
-      await args.onResult(person.id, parked("domain_parked"));
+      if (!(await moveAway(person, 0))) await args.onResult(person.id, parked("domain_parked"));
       continue;
     }
 
     const known = state.status === "valid" ? state.pattern : null;
     const r = await findPerson(person, state.domain, known, args.check);
-    await args.onResult(person.id, r);
+    // Rejected everywhere on a company not proven yet: maybe the wrong domain.
+    const wrongDomain =
+      r.status === "not_found" && (r.reason === "no_mx" || (r.reason === "all_rejected" && state.status !== "valid"));
+    if (!(wrongDomain && (await moveAway(person, r.checksUsed)))) await args.onResult(person.id, r);
 
     if (r.status === "found") {
       // First win proves the domain and sets the company style for everyone after.

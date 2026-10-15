@@ -1,5 +1,6 @@
 // Entry point: `npm run worker`. Reads settings from environment variables.
 import { pgDb } from "@/lib/db";
+import { realDns } from "@/lib/dns";
 import { createMtnClient } from "@/lib/mailtester";
 import { migrate, setWorkerStatus } from "@/lib/repo";
 import { startWorker } from "./run";
@@ -34,6 +35,7 @@ async function main() {
       baseUrl: process.env.MTN_BASE_URL || undefined,
       timeoutMs: num("MTN_TIMEOUT_MS", 45_000),
     }),
+    dns: realDns,
     concurrency,
     rateMax: num("MTN_RATE_MAX", 22),
     rateWindowMs: num("MTN_RATE_WINDOW_MS", 10_000),

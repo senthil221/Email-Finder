@@ -4,12 +4,15 @@
 import type { Db } from "@/lib/db";
 import { processDomain } from "@/lib/engine";
 import { createChecker, createProviderGate, FatalError, PauseError } from "@/lib/checker";
+import { findAlternateDomain, type DnsDeps } from "@/lib/dns";
 import type { MtnClient } from "@/lib/mailtester";
 import * as repo from "@/lib/repo";
 
 export type WorkerOptions = {
   db: Db;
   mtn: MtnClient;
+  /** Free DNS checks (MX pre-check, alternate domain). Off when not given (tests). */
+  dns?: DnsDeps;
   concurrency?: number;
   // Pace measured by Prospect Sync on the Ultimate plan: 22 starts per 10s,
   // 450ms apart (25 per 10s got HTTP 429 within minutes).
@@ -33,6 +36,7 @@ export function startWorker(o: WorkerOptions) {
   const db = o.db;
   const log = o.log ?? ((m: string) => console.log(`[worker ${new Date().toISOString()}] ${m}`));
   const sleep = o.sleep ?? realSleep;
+  const dns = o.dns;
   const dailyLimit = o.dailyLimit ?? 190_000;
   const gate = createProviderGate({
     max: o.rateMax ?? 22,
@@ -90,6 +94,18 @@ export function startWorker(o: WorkerOptions) {
         check: checker,
         onResult: (id, r) => repo.saveResult(db, id, r),
         onDomain: (s) => repo.saveDomain(db, s),
+        ...(dns && {
+          mx: async (d: string) => {
+            const a = await dns.mx(d);
+            return a === "error" ? null : a === "mx";
+          },
+          findAlternate: (d: string) =>
+            findAlternateDomain(d, dns, async (alt) => !(await repo.isDeadDomain(db, alt))),
+          onMove: async (id: string, alt: string, used: number) => {
+            await repo.movePerson(db, id, alt, used);
+            log(`${state.domain}: moved a person to ${alt}`);
+          },
+        }),
       });
       log(`${state.domain}: ${people.length} people -> domain ${final.status}${final.pattern ? ` (${final.pattern})` : ""}`);
     } catch (e) {

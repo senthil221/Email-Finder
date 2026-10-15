@@ -5,6 +5,7 @@ import type { Db } from "@/lib/db";
 import * as repo from "@/lib/repo";
 import { startWorker } from "@/worker/run";
 import type { MtnCall, Verdict } from "@/lib/mailtester";
+import type { DnsDeps } from "@/lib/dns";
 
 async function memDb(): Promise<Db> {
   const pg = new PGlite();
@@ -126,6 +127,54 @@ describe("worker on a real schema", () => {
     const job = await repo.getJob(db, limited);
     expect(job?.pending).toBe(1); // person stays pending until tomorrow
     expect((await repo.getWorkerStatus(db))?.state).toBe("stopped");
+  });
+});
+
+describe("free DNS steps on a real schema", () => {
+  it("no-MX domains cost nothing, wrong domains move once to the twin, Indian names get extras", async () => {
+    const db = await memDb();
+    await repo.migrate(db);
+    const jobId = await repo.createJob(db, { name: "dns" });
+    await repo.addRows(db, jobId, 1, [
+      row("Old", "Co", "nomail.in"), // no MX anywhere
+      row("Ravi", "Kumar", "parked.in"), // MX, but the company uses parked.com
+      row("Dr. Senthil Nathan", "S I", "b2b.in"),
+    ]);
+    await repo.setJobStatus(db, jobId, "running");
+
+    const mxAsked: string[] = [];
+    const withMx = new Set(["parked.in", "parked.com", "b2b.in"]);
+    const dns: DnsDeps = {
+      mx: async (d) => (mxAsked.push(d), withMx.has(d) ? "mx" : "none"),
+      redirect: async () => null,
+    };
+    const { mtn, calls } = fakeMtn({
+      catchAll: [],
+      noMx: [],
+      boxes: ["ravi.kumar@parked.com", "senthil.nathan@b2b.in"],
+    });
+    await startWorker({ db, mtn, dns, concurrency: 2, rateMax: 1000, minSpacingMs: 0, idleMs: 5, exitWhenIdle: true, sleep: tick, log: () => {} }).done;
+
+    const rows = await repo.listRows(db, jobId);
+    const by = Object.fromEntries(rows.map((r) => [r.first, r]));
+    expect(by.old).toMatchObject({ status: "not_found", reason: "no_mx", checks_used: 0 });
+    expect(calls.some((c) => c.includes("nomail"))).toBe(false);
+    expect(by.ravi).toMatchObject({ status: "found", email: "ravi.kumar@parked.com", domain: "parked.com", checks_used: 11 });
+    expect(by["dr senthil nathan"]).toMatchObject({ status: "found", email: "senthil.nathan@b2b.in", pattern: "first1.first2" });
+
+    const [moved] = await db.query<{ moved_from: string }>(`select moved_from from job_rows where first = 'ravi'`);
+    expect(moved.moved_from).toBe("parked.in");
+    expect(await repo.getDomain(db, "nomail.in")).toMatchObject({ status: "no_mx", mxCheckedAt: null, alt: null });
+    const parked = await repo.getDomain(db, "parked.in");
+    expect(parked).toMatchObject({ status: "unknown", alt: "parked.com" });
+    expect(parked?.mxCheckedAt).toBeInstanceOf(Date);
+    expect(await repo.getDomain(db, "parked.com")).toMatchObject({ status: "valid", pattern: "first.last" });
+
+    // Every check still logs its pattern for the Insights page.
+    const logged = await db.query<{ email: string; pattern: string | null }>(`select email, pattern from verifications`);
+    expect(logged.every((v) => v.pattern)).toBe(true);
+    expect(logged.find((v) => v.email === "senthil.nathan@b2b.in")?.pattern).toBe("first1.first2");
+    expect(mxAsked.filter((d) => d === "parked.in")).toHaveLength(1);
   });
 });
 

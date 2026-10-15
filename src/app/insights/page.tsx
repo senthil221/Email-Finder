@@ -2,14 +2,15 @@
 import { useState } from "react";
 import { BarChart3, CalendarDays, Gauge, Globe, Lightbulb, ListOrdered, MessageSquare, PieChart, Target, Trophy, Users } from "lucide-react";
 import type { Insights, Range } from "@/lib/views";
-import { PATTERNS } from "@/lib/patterns";
+import { buildLocal, PATTERN_IDS, type PatternId } from "@/lib/patterns";
 import { usePoll } from "@/components/usePoll";
 import { CountUp, PageHead, Seg } from "@/components/ui";
 import { ColumnChart, Heatmap } from "@/components/charts";
 import { n, PATTERN_LABEL, REASON_LABEL, STATUS_LABEL } from "@/components/format";
 
-const CURRENT = PATTERNS.map((p) => p.id as string);
-const example = (id: string) => (PATTERNS.find((p) => p.id === id)?.build("andrew", "deepak") ?? id) + "@";
+const CURRENT: string[] = PATTERN_IDS;
+const example = (id: string) =>
+  (buildLocal(id as PatternId, "andrew", "deepak") ?? buildLocal(id as PatternId, "senthil nathan", "kumar") ?? id) + "@";
 const pct = (a: number, b: number) => (b ? (a / b) * 100 : 0);
 const MIN_FINDS = 20; // below this, a suggested order is noise
 

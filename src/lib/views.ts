@@ -91,9 +91,10 @@ export type Lookup = {
   pattern: string | null;
   reason: string | null;
   checks_used: number;
+  moved_from: string | null;
 };
 
-const LOOKUP_SQL = `select j.id, j.created_at, r.first, r.last, r.domain, r.status, r.email, r.pattern, r.reason, r.checks_used
+const LOOKUP_SQL = `select j.id, j.created_at, r.first, r.last, r.domain, r.status, r.email, r.pattern, r.reason, r.checks_used, r.moved_from
   from jobs j join job_rows r on r.job_id = j.id`;
 
 export async function listLookups(db: Db, limit = 50, offset = 0): Promise<{ rows: Lookup[]; total: number }> {
@@ -122,7 +123,11 @@ const FINAL = new Set(["valid", "invalid", "catch_all", "no_mx"]);
 export async function lookupDetail(db: Db, jobId: string) {
   const [lookup] = await db.query<Lookup>(`${LOOKUP_SQL} where j.id = $1 limit 1`, [jobId]);
   if (!lookup) return null;
-  const list = candidates(lookup.first, lookup.last, lookup.domain);
+  // A person restarted on the company's other domain: show both ladders, first domain first.
+  const list = [
+    ...(lookup.moved_from ? candidates(lookup.first, lookup.last, lookup.moved_from) : []),
+    ...candidates(lookup.first, lookup.last, lookup.domain),
+  ];
   const rows = list.length
     ? await db.query<{ email: string; verdict: string; message: string | null; created_at: string }>(
         `select email, verdict, message, created_at from verifications

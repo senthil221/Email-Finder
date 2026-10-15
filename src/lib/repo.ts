@@ -163,14 +163,28 @@ export async function listRows(
 
 // ---------- worker ----------
 
-type DomainRow = { domain: string; status: string; pattern: string | null; checked_at: string | Date | null };
+type DomainRow = {
+  domain: string;
+  status: string;
+  pattern: string | null;
+  checked_at: string | Date | null;
+  mx_checked_at: string | Date | null;
+  alt_domain: string | null;
+  alt_checked_at: string | Date | null;
+};
+
+const DOMAIN_COLS = ["domain", "status", "pattern", "checked_at", "mx_checked_at", "alt_domain", "alt_checked_at"];
+const date = (v: string | Date | null) => (v ? new Date(v) : null);
 
 function toState(r: DomainRow): DomainState {
   return {
     domain: r.domain,
     status: r.status as DomainState["status"],
     pattern: isPatternId(r.pattern) ? r.pattern : null,
-    checkedAt: r.checked_at ? new Date(r.checked_at) : null,
+    checkedAt: date(r.checked_at),
+    mxCheckedAt: date(r.mx_checked_at),
+    alt: r.alt_domain,
+    altCheckedAt: date(r.alt_checked_at),
   };
 }
 
@@ -189,7 +203,7 @@ export async function claimDomain(db: Db, lockSeconds = 600): Promise<DomainStat
      )
      update domains set locked_until = now() + make_interval(secs => $1)
      from c where domains.domain = c.domain
-     returning domains.domain, domains.status, domains.pattern, domains.checked_at`,
+     returning ${DOMAIN_COLS.map((c) => `domains.${c}`).join(", ")}`,
     [lockSeconds],
   );
   return rows[0] ? toState(rows[0]) : null;
@@ -208,7 +222,7 @@ export async function releaseDomain(db: Db, domain: string) {
 
 export async function pendingPeople(db: Db, domain: string, limit = 50): Promise<Person[]> {
   return db.query<Person>(
-    `select r.id::text as id, r.first, r.last from job_rows r join jobs j on j.id = r.job_id
+    `select r.id::text as id, r.first, r.last, r.moved_from as "movedFrom" from job_rows r join jobs j on j.id = r.job_id
      where r.domain = $1 and r.status = 'pending' and j.status = 'running'
      order by j.priority desc, r.id limit $2`,
     [domain, limit],
@@ -226,14 +240,35 @@ export async function saveResult(db: Db, rowId: string, r: PersonResult) {
 
 export async function saveDomain(db: Db, s: DomainState) {
   await db.query(
-    `update domains set status = $2, pattern = $3, checked_at = $4, updated_at = now() where domain = $1`,
-    [s.domain, s.status, s.pattern, s.checkedAt],
+    `update domains set status = $2, pattern = $3, checked_at = $4, mx_checked_at = $5, alt_domain = $6,
+       alt_checked_at = $7, updated_at = now() where domain = $1`,
+    [s.domain, s.status, s.pattern, s.checkedAt, s.mxCheckedAt ?? null, s.alt ?? null, s.altCheckedAt ?? null],
   );
+}
+
+/** Restart a person on another domain (only ever once): pending there, checks so far kept. */
+export async function movePerson(db: Db, rowId: string, domain: string, checksUsed: number) {
+  await db.query(`insert into domains (domain) values ($1) on conflict (domain) do nothing`, [domain]);
+  await db.query(
+    `update job_rows set moved_from = domain, domain = $2, checks_used = checks_used + $3, updated_at = now()
+     where id = $1 and moved_from is null`,
+    [rowId, domain, checksUsed],
+  );
+}
+
+/** Known dead within `days` (no MX, or every scout rejected): not worth moving people to. */
+export async function isDeadDomain(db: Db, domain: string, days = 60): Promise<boolean> {
+  const rows = await db.query(
+    `select 1 from domains where domain = $1 and status in ('no_mx', 'not_found')
+       and checked_at > now() - make_interval(days => $2)`,
+    [domain, days],
+  );
+  return rows.length > 0;
 }
 
 export async function getDomain(db: Db, domain: string): Promise<DomainState | null> {
   const rows = await db.query<DomainRow>(
-    `select domain, status, pattern, checked_at from domains where domain = $1`,
+    `select ${DOMAIN_COLS.join(", ")} from domains where domain = $1`,
     [domain],
   );
   return rows[0] ? toState(rows[0]) : null;

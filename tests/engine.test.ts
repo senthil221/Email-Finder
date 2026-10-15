@@ -27,7 +27,7 @@ function fakeCheck(w: World) {
 }
 
 const fresh = (domain: string): DomainState => ({ domain, status: "unknown", pattern: null, checkedAt: null });
-const p = (id: string, first: string, last: string): Person => ({ id, first, last });
+const p = (id: string, first: string, last: string, movedFrom?: string): Person => ({ id, first, last, movedFrom });
 
 async function run(state: DomainState, people: Person[], w: World, now?: Date) {
   const { check, calls } = fakeCheck(w);
@@ -144,6 +144,103 @@ describe("processDomain", () => {
     const { results, calls } = await run(state, [p("1", "andrew", "deepak")], { boxes: new Set(["adeepak@x.com"]) });
     expect(calls).toEqual(["adeepak@x.com"]);
     expect(results["1"].checksUsed).toBe(1);
+  });
+});
+
+describe("processDomain: free DNS steps", () => {
+  async function runDns(
+    state: DomainState,
+    people: Person[],
+    w: World,
+    o: { mx?: Record<string, boolean | null>; alt?: string | null; now?: Date } = {},
+  ) {
+    const { check, calls } = fakeCheck(w);
+    const results: Record<string, PersonResult> = {};
+    const moves: [string, string, number][] = [];
+    const mxAsked: string[] = [];
+    let altAsked = 0;
+    const final = await processDomain({
+      state,
+      people,
+      check,
+      onResult: async (id, r) => {
+        results[id] = r;
+      },
+      onDomain: async () => {},
+      mx: async (d) => (mxAsked.push(d), o.mx && d in o.mx ? o.mx[d] : true),
+      findAlternate: async () => (altAsked++, o.alt ?? null),
+      onMove: async (id, d, used) => {
+        moves.push([id, d, used]);
+      },
+      now: o.now ? () => o.now! : undefined,
+    });
+    return { final, results, calls, moves, mxAsked, altAsked: () => altAsked };
+  }
+
+  it("a domain with no MX record is no_mx with zero MailTester checks", async () => {
+    const { final, results, calls } = await runDns(fresh("dead.in"), [p("1", "a", "b"), p("2", "c", "d")], { boxes: new Set() }, { mx: { "dead.in": false } });
+    expect(calls).toHaveLength(0);
+    expect(final.status).toBe("no_mx");
+    expect(results["1"]).toMatchObject({ status: "not_found", reason: "no_mx", checksUsed: 0 });
+  });
+
+  it("MX found is remembered: the next batch does not ask DNS again", async () => {
+    const now = new Date("2026-10-15");
+    const first = await runDns(fresh("ok.in"), [p("1", "a", "b")], { boxes: new Set(["a@ok.in"]) }, { now });
+    expect(first.mxAsked).toEqual(["ok.in"]);
+    const unknownAgain = { ...first.final, status: "unknown" as const };
+    const second = await runDns(unknownAgain, [p("2", "c", "d")], { boxes: new Set(["c@ok.in"]) }, { now });
+    expect(second.mxAsked).toEqual([]);
+  });
+
+  it("a DNS error is not a verdict: MailTester decides as before", async () => {
+    const { calls, final } = await runDns(fresh("flaky.in"), [p("1", "a", "b")], { boxes: new Set(["a@flaky.in"]) }, { mx: { "flaky.in": null } });
+    expect(calls).toHaveLength(1);
+    expect(final.status).toBe("valid");
+    expect(final.mxCheckedAt).toBeUndefined(); // not remembered: asked again next time
+  });
+
+  it("no MX: people move to the twin domain instead of being parked", async () => {
+    const { results, moves, calls } = await runDns(
+      fresh("acme.in"),
+      [p("1", "a", "b"), p("2", "c", "d", "other.in")],
+      { boxes: new Set() },
+      { mx: { "acme.in": false }, alt: "acme.com" },
+    );
+    expect(calls).toHaveLength(0);
+    expect(moves).toEqual([["1", "acme.com", 0]]);
+    // Already moved once: never moved again.
+    expect(results["2"]).toMatchObject({ reason: "no_mx" });
+  });
+
+  it("an all-rejected scout on an unproven company is restarted on the alternate, checks kept", async () => {
+    const { results, moves, final, altAsked } = await runDns(
+      fresh("x.in"),
+      [p("1", "andrew", "deepak"), p("2", "ravi", "kumar"), p("3", "anu", "priya")],
+      { boxes: new Set() },
+      { alt: "x.com" },
+    );
+    expect(moves).toEqual([
+      ["1", "x.com", 9],
+      ["2", "x.com", 9],
+      ["3", "x.com", 0], // parked company: the rest go straight over
+    ]);
+    expect(results).toEqual({});
+    expect(final).toMatchObject({ status: "not_found", alt: "x.com" });
+    expect(altAsked()).toBe(1); // looked up once, then remembered
+  });
+
+  it("no alternate: same results as before", async () => {
+    const { results, moves } = await runDns(fresh("x.in"), [p("1", "andrew", "deepak")], { boxes: new Set() });
+    expect(moves).toEqual([]);
+    expect(results["1"]).toMatchObject({ status: "not_found", reason: "all_rejected" });
+  });
+
+  it("on a proven company an all-rejected person stays (they probably left)", async () => {
+    const state: DomainState = { domain: "x.in", status: "valid", pattern: "first", checkedAt: new Date() };
+    const { results, moves } = await runDns(state, [p("1", "andrew", "deepak")], { boxes: new Set() }, { alt: "x.com" });
+    expect(moves).toEqual([]);
+    expect(results["1"].reason).toBe("all_rejected");
   });
 });
 

@@ -45,6 +45,9 @@ export const PATTERN_LABEL: Record<string, string> = {
   first_last: "first_last@",
   fl: "fl@",
   "f.last": "f.last@",
+  "first1.first2": "first1.first2@",
+  first1: "first1@",
+  "first1.last": "first1.last@",
 };
 
 export function jobState(job: { status: string; pending: number }): string {

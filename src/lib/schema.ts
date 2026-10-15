@@ -41,6 +41,14 @@ create table if not exists domains (
   updated_at timestamptz not null default now()
 );
 
+-- Free DNS checks, so MailTester is never asked about a domain that cannot get mail,
+-- and the company's other domain (website redirect or .in/.com/.co.in twin).
+alter table domains add column if not exists mx_checked_at timestamptz;
+alter table domains add column if not exists alt_domain text;
+alter table domains add column if not exists alt_checked_at timestamptz;
+-- Set when a person was restarted on the alternate domain (only ever once).
+alter table job_rows add column if not exists moved_from text;
+
 create table if not exists verifications (
   id bigserial primary key,
   email text not null,
