@@ -1,11 +1,14 @@
 "use client";
-import { Suspense, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
-import { Download, Pause, Play } from "lucide-react";
-import { Topbar } from "@/components/Topbar";
-import { usePoll } from "@/components/usePoll";
-import { jobState, n, PATTERN_LABEL, REASON_LABEL, STATUS_LABEL } from "@/components/format";
+import { useEffect, useRef, useState } from "react";
+import { useParams } from "next/navigation";
+import { Asterisk, Check, Download, Layers, Pause, Play, Search, Sparkles, X, Zap } from "lucide-react";
 import type { JobRow, JobSummary } from "@/lib/repo";
+import { usePoll } from "@/components/usePoll";
+import { Chip, CopyButton, CountUp, PageHead, Pager, Ring, Seg, StackBar } from "@/components/ui";
+import { toast } from "@/components/Shell";
+import { fmtDate, fmtEta, jobState, n, PATTERN_LABEL, REASON_LABEL } from "@/components/format";
+
+type Resp = { job: JobSummary; rows: JobRow[]; rate: number; etaMinutes: number | null; recent: JobRow[] };
 
 const TABS = [
   ["", "All", "total"],
@@ -14,197 +17,254 @@ const TABS = [
   ["not_found", "Not found", "not_found"],
   ["unverified", "Unverified", "unverified"],
   ["pending", "Pending", "pending"],
-  ["invalid_input", "Invalid input", "invalid_input"],
+  ["invalid_input", "Invalid", "invalid_input"],
 ] as const;
-
 const PAGE = 100;
 
 export default function JobPage() {
-  return (
-    <Suspense>
-      <JobView />
-    </Suspense>
-  );
-}
-
-function JobView() {
   const { id } = useParams<{ id: string }>();
-  const search = useSearchParams();
-  const dupes = Number(search.get("dupes")) || 0;
   const [tab, setTab] = useState("");
   const [page, setPage] = useState(0);
+  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
   const [acting, setActing] = useState(false);
 
-  const url = `/api/jobs/${id}?page=${page}&size=${PAGE}${tab ? `&status=${tab}` : ""}`;
-  const { data, error, reload } = usePoll<{ job: JobSummary; rows: JobRow[] }>(url, 3000);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQuery(q.trim());
+      setPage(0);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const url = `/api/jobs/${id}?page=${page}&size=${PAGE}${tab ? `&status=${tab}` : ""}${query ? `&q=${encodeURIComponent(query)}` : ""}`;
+  const { data, error, reload } = usePoll<Resp>(url, 2000);
   const job = data?.job;
+
+  // Toast when the job finishes while you watch.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (!job) return;
+    const st = jobState(job);
+    if (st === "running") wasRunning.current = true;
+    else if (st === "done" && wasRunning.current) {
+      wasRunning.current = false;
+      toast(`${job.name} finished: ${n(job.found)} emails found`);
+    }
+  }, [job]);
 
   if (error && !data) {
     return (
-      <>
-        <Topbar title="Job" crumb="Jobs" />
-        <div className="content">
-          <div className="notice err">{error}</div>
-        </div>
-      </>
+      <div className="page">
+        <div className="notice err">{error}</div>
+      </div>
     );
   }
-  if (!job) {
+  if (!job || !data) {
     return (
-      <>
-        <Topbar title="Loading…" crumb="Jobs" />
-        <div className="content" />
-      </>
+      <div className="page">
+        <div className="skel" style={{ height: 60, width: 340 }} />
+        <div className="skel" style={{ height: 200 }} />
+        <div className="skel" style={{ height: 300 }} />
+      </div>
     );
   }
 
-  const state = jobState(job);
+  const st = jobState(job);
   const decided = job.total - job.pending;
-  const pct = job.total ? Math.round((decided / job.total) * 100) : 0;
+  const pct = job.total ? (decided / job.total) * 100 : 0;
   const tabCount = TABS.find(([k]) => k === tab)![2];
-  const pages = Math.max(1, Math.ceil(job[tabCount] / PAGE));
 
   async function act(path: "cancel" | "start") {
     setActing(true);
     await fetch(`/api/jobs/${id}/${path}`, { method: "POST" });
+    toast(path === "cancel" ? "Job stopped. Resume any time." : "Job resumed", path === "cancel" ? "warn" : "ok");
     reload();
     setActing(false);
   }
 
   return (
-    <>
-      <Topbar title={job.name} crumb="Jobs">
-        {state === "pending" && (
-          <button className="btn btn-sm btn-danger" onClick={() => act("cancel")} disabled={acting}>
-            <Pause size={14} strokeWidth={1.75} /> Stop
+    <div className="page">
+      <PageHead
+        eyebrow={
+          <>
+            <Layers size={13} /> Bulk job · {fmtDate(job.created_at)}
+          </>
+        }
+        title={job.name}
+      >
+        {st === "running" && (
+          <button className="btn btn-danger" onClick={() => act("cancel")} disabled={acting}>
+            <Pause size={14} /> Stop
           </button>
         )}
-        {state === "cancelled" && job.pending > 0 && (
-          <button className="btn btn-sm" onClick={() => act("start")} disabled={acting}>
-            <Play size={14} strokeWidth={1.75} /> Resume
+        {st === "cancelled" && job.pending > 0 && (
+          <button className="btn" onClick={() => act("start")} disabled={acting}>
+            <Play size={14} /> Resume
           </button>
         )}
-        <a className="btn btn-sm" href={`/api/jobs/${id}/export`}>
-          <Download size={14} strokeWidth={1.75} /> Export all
+        <a className="btn" href={`/api/jobs/${id}/export`}>
+          <Download size={14} /> Export all
         </a>
-        {tab && (
-          <a className="btn btn-sm btn-primary" href={`/api/jobs/${id}/export?status=${tab}`}>
-            <Download size={14} strokeWidth={1.75} /> Export {STATUS_LABEL[tab]?.toLowerCase()}
-          </a>
-        )}
-      </Topbar>
-      <div className="content">
-        <div className="stats">
-          <Stat k="People" v={n(job.total)} />
-          <Stat k="Found" v={n(job.found)} tone="var(--success-ink)" />
-          <Stat k="Catch-all" v={n(job.catch_all)} tone="var(--warning-ink)" />
-          <Stat k="Not found" v={n(job.not_found)} />
-          <Stat k="Checks used" v={n(job.checks_used)} />
-          <Stat
-            k="Checks per found email"
-            v={job.found ? (job.checks_used / job.found).toFixed(1) : "–"}
-          />
-        </div>
+        <a className="btn btn-primary" href={`/api/jobs/${id}/export?status=found`}>
+          <Download size={14} /> Export {n(job.found)} found
+        </a>
+      </PageHead>
 
-        {dupes > 0 && <div className="notice">{n(dupes)} duplicate rows (same name and domain) were skipped.</div>}
-
-        <div>
-          <div className="view-tabs">
-            {TABS.map(([key, label, count]) => (
-              <button
-                key={key}
-                className={tab === key ? "is-on" : ""}
-                onClick={() => {
-                  setTab(key);
-                  setPage(0);
-                }}
-              >
-                {label} <span>{n(job[count])}</span>
-              </button>
-            ))}
-            <div className="view-tabs-summary">
-              <span className={`status ${state}`}>{STATUS_LABEL[state] ?? state}</span>
-              <div className="progress" style={{ width: 120 }}>
-                <i style={{ width: `${pct}%` }} />
+      <section className="grid g-main">
+        <div className="panel glow rise" style={{ ["--i" as string]: 1 }}>
+          <div className="panel-body" style={{ display: "flex", gap: 26, alignItems: "center", flexWrap: "wrap" }}>
+            <Ring pct={pct} size={150} stroke={11} done={st === "done"}>
+              <b>
+                <CountUp value={Math.round(pct)} />%
+              </b>
+              <span>{st === "done" ? "complete" : st === "running" ? "scanning" : "progress"}</span>
+            </Ring>
+            <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 18 }}>
+              <div className="row" style={{ gap: 10 }}>
+                <Chip status={st === "running" ? "live" : st}>{st === "running" ? "Live" : undefined}</Chip>
+                <span className="muted num">
+                  {n(decided)} of {n(job.total)} people decided
+                </span>
               </div>
-              <span>
-                <b>{pct}%</b> done
-              </span>
+              <div className="stat-inline">
+                <div>
+                  <span className="k">Found</span>
+                  <span className="v" style={{ color: "var(--ok-ink)" }}>
+                    <CountUp value={job.found} />
+                  </span>
+                </div>
+                <div>
+                  <span className="k">Catch-all</span>
+                  <span className="v" style={{ color: "var(--warn-ink)" }}>
+                    <CountUp value={job.catch_all} />
+                  </span>
+                </div>
+                <div>
+                  <span className="k">Speed</span>
+                  <span className="v">
+                    {data.rate ? data.rate.toFixed(1) : "–"}
+                    <span className="faint" style={{ fontSize: 12, fontWeight: 400 }}> /min</span>
+                  </span>
+                </div>
+                <div>
+                  <span className="k">Time left</span>
+                  <span className="v">{st === "done" ? "Done" : fmtEta(data.etaMinutes)}</span>
+                </div>
+                <div>
+                  <span className="k">Checks used</span>
+                  <span className="v">
+                    <CountUp value={job.checks_used} />
+                  </span>
+                </div>
+                <div>
+                  <span className="k">Per find</span>
+                  <span className="v">{job.found ? (job.checks_used / job.found).toFixed(1) : "–"}</span>
+                </div>
+              </div>
+              <StackBar counts={job} total={job.total - job.invalid_input} />
             </div>
           </div>
         </div>
 
-        <div className="table-wrap">
-          <table className="t">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Name</th>
-                <th>Domain</th>
-                <th>Status</th>
-                <th>Email</th>
-                <th>Pattern</th>
-                <th className="r">Checks</th>
-                <th>Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.rows.map((r) => (
-                <tr key={r.id}>
-                  <td className="faint num">{r.row_no}</td>
-                  <td>
-                    {r.first || r.last ? (
-                      <span style={{ textTransform: "capitalize" }}>
-                        {r.first} {r.last}
-                      </span>
-                    ) : (
-                      <span className="faint">—</span>
-                    )}
-                  </td>
-                  <td className="muted">{r.domain || <span className="faint">—</span>}</td>
-                  <td>
-                    <span className={`status ${r.status}`}>{STATUS_LABEL[r.status] ?? r.status}</span>
-                  </td>
-                  <td className="mono">{r.email ?? <span className="faint">—</span>}</td>
-                  <td>{r.pattern ? <span className="tag">{PATTERN_LABEL[r.pattern] ?? r.pattern}</span> : null}</td>
-                  <td className={`r num${r.checks_used === 0 ? " zero" : ""}`}>{r.checks_used}</td>
-                  <td className="muted" style={{ fontSize: 12.5 }}>
-                    {r.reason ? (REASON_LABEL[r.reason] ?? r.reason) : ""}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {data.rows.length === 0 && <div className="empty">Nothing here yet.</div>}
+        <div className="panel rise" style={{ ["--i" as string]: 2 }}>
+          <div className="panel-head">
+            <h2 className="panel-title">
+              {st === "running" ? <span className="live-dot" /> : <Zap size={15} />} Latest results
+            </h2>
+          </div>
+          <div className="feed" style={{ maxHeight: 250 }}>
+            {data.recent.length === 0 && <div className="empty">Results stream in here as people are decided.</div>}
+            {data.recent.map((r) => (
+              <div key={r.id + r.status} className="feed-item is-new">
+                <span className={`fi-icon ${r.status === "found" ? "valid" : r.status === "catch_all" ? "catch_all" : r.status === "unverified" ? "retry" : "invalid"}`}>
+                  {r.status === "found" ? <Check size={13} strokeWidth={2.4} /> : r.status === "catch_all" ? <Asterisk size={13} /> : <X size={13} />}
+                </span>
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: "block", textTransform: "capitalize", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {r.first} {r.last}
+                  </span>
+                  <span className="fi-email" style={{ display: "block", fontSize: 11.5, color: r.email ? "var(--ok-ink)" : "var(--faint)" }}>
+                    {r.email ?? r.domain}
+                  </span>
+                </span>
+                <span className="fi-meta num">
+                  {r.checks_used} {r.checks_used === 1 ? "check" : "checks"}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
+      </section>
 
-        {pages > 1 && (
-          <div className="pager">
-            <span className="num">
-              Page {page + 1} of {n(pages)}
-            </span>
-            <div className="toolbar">
-              <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>
-                Previous
-              </button>
-              <button className="btn btn-sm" disabled={page + 1 >= pages} onClick={() => setPage(page + 1)}>
-                Next
-              </button>
-            </div>
+      <div className="toolbar rise" style={{ ["--i" as string]: 3 }}>
+        <Seg
+          value={tab}
+          onChange={(v) => {
+            setTab(v);
+            setPage(0);
+          }}
+          items={TABS.map(([value, label, key]) => ({ value, label, count: job[key] }))}
+        />
+        <span className="spacer" />
+        <div className="search" style={{ width: 260 }}>
+          <Search size={14} />
+          <input className="input" placeholder="Search name, domain or email" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="tbl-wrap rise" style={{ ["--i" as string]: 4 }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Person</th>
+              <th>Domain</th>
+              <th>Status</th>
+              <th>Email</th>
+              <th>Pattern</th>
+              <th className="r">Checks</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map((r) => (
+              // Keyed by status too: a row re-mounts, and flashes, the moment it is decided.
+              <tr key={r.id + r.status} className={r.status === "pending" ? "" : "flash"}>
+                <td className="faint num">{r.row_no}</td>
+                <td className="name">{r.first || r.last ? `${r.first} ${r.last}` : <span className="faint">—</span>}</td>
+                <td className="mono muted">{r.domain || <span className="faint">—</span>}</td>
+                <td>
+                  <Chip status={r.status} />
+                </td>
+                <td className="mono">
+                  {r.email ? (
+                    <span className="row" style={{ gap: 4 }}>
+                      {r.email}
+                      <span className="row-act">
+                        <CopyButton text={r.email} />
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="faint">—</span>
+                  )}
+                </td>
+                <td>{r.pattern && <span className="tag">{PATTERN_LABEL[r.pattern]}</span>}</td>
+                <td className={`r num${r.checks_used ? "" : " zero"}`}>{r.checks_used}</td>
+                <td className="muted" style={{ fontSize: 12 }}>
+                  {r.reason ? REASON_LABEL[r.reason] ?? r.reason : ""}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {data.rows.length === 0 && (
+          <div className="empty">
+            <Sparkles size={20} /> {query ? "No matches." : "Nothing here yet."}
           </div>
         )}
       </div>
-    </>
-  );
-}
-
-function Stat({ k, v, tone }: { k: string; v: string; tone?: string }) {
-  return (
-    <div className="stat">
-      <div className="k">{k}</div>
-      <div className="v" style={tone ? { color: tone } : undefined}>
-        {v}
-      </div>
+      {!query && <Pager page={page} pages={Math.ceil(job[tabCount] / PAGE)} onPage={setPage} />}
     </div>
   );
 }

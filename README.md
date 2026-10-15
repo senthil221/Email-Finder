@@ -23,7 +23,9 @@ Combinations, in try order (`src/lib/patterns.ts`):
 | `src/lib/engine.ts` | Per-company logic: scout, reuse pattern, park catch-alls |
 | `src/lib/repo.ts` | All SQL (Postgres) |
 | `src/worker/` | Background worker: claims companies from the queue and runs the engine |
-| `src/app/` | Next.js web app: single lookup, CSV upload, results, CSV export |
+| `src/lib/views.ts` | Read-only queries for the live screens (dashboard, feeds, lookup ladder, domains) |
+| `src/app/` | Next.js web app: dashboard, live finder (Ctrl K), bulk upload, history, job detail, domains |
+| `src/components/` | Shell, charts, live feed, combination ladder, UI kit (`globals.css` + `theme.css` = the design system) |
 
 ## Run locally (no real MailTester credits spent)
 

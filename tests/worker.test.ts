@@ -128,3 +128,30 @@ describe("worker on a real schema", () => {
     expect((await repo.getWorkerStatus(db))?.state).toBe("stopped");
   });
 });
+
+describe("live views on a real schema", () => {
+  it("ladder, overview, lookups and domains reflect what the worker did", async () => {
+    const { lookupDetail, overview, listLookups, listDomains, recentVerifications } = await import("@/lib/views");
+    const db = await memDb();
+    await repo.migrate(db);
+    const id = await repo.createJob(db, { name: "Senthil Nathan @ b2bdrive.net", kind: "single", priority: 10 });
+    await repo.addRows(db, id, 1, [row("Senthil", "Nathan", "b2bdrive.net")]);
+    await repo.setJobStatus(db, id, "running");
+    const { mtn } = fakeMtn({ catchAll: [], noMx: [], boxes: ["senthil.nathan@b2bdrive.net"] });
+    await startWorker({ db, mtn, concurrency: 1, rateMax: 1000, minSpacingMs: 0, idleMs: 5, exitWhenIdle: true, sleep: tick, log: () => {} }).done;
+
+    const d = await lookupDetail(db, id);
+    expect(d?.lookup).toMatchObject({ status: "found", email: "senthil.nathan@b2bdrive.net" });
+    expect(d?.steps.slice(0, 3).map((s) => s.state)).toEqual(["invalid", "valid", "skipped"]);
+    expect(d?.steps[1].email).toBe("senthil.nathan@b2bdrive.net");
+    expect(d?.domain).toMatchObject({ status: "valid", pattern: "first.last" });
+
+    const ov = await overview(db);
+    expect(ov).toMatchObject({ checks24h: 2, found24h: 1, provenDomains: 1 });
+    expect(ov.totals.found).toBe(1);
+    expect(ov.patterns).toEqual([{ pattern: "first.last", n: 1 }]);
+    expect((await listLookups(db)).total).toBe(1);
+    expect((await listDomains(db, { status: "valid" })).rows[0]).toMatchObject({ domain: "b2bdrive.net", people: 1, found: 1 });
+    expect(await recentVerifications(db, 5)).toHaveLength(2);
+  });
+});

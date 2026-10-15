@@ -149,13 +149,15 @@ export type JobRow = {
 export async function listRows(
   db: Db,
   jobId: string,
-  opts: { status?: string; limit?: number; offset?: number } = {},
+  opts: { status?: string; q?: string; limit?: number; offset?: number } = {},
 ): Promise<JobRow[]> {
   return db.query<JobRow>(
     `select id::text, row_no, first, last, domain, input, status, email, pattern, reason, checks_used
      from job_rows where job_id = $1 and ($2::text is null or status = $2)
+       and ($5::text is null or first || ' ' || last ilike '%' || $5 || '%' or domain ilike '%' || $5 || '%'
+            or email ilike '%' || $5 || '%')
      order by row_no limit $3 offset $4`,
-    [jobId, opts.status ?? null, opts.limit ?? 100, opts.offset ?? 0],
+    [jobId, opts.status ?? null, opts.limit ?? 100, opts.offset ?? 0, opts.q ?? null],
   );
 }
 
