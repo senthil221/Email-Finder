@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Papa from "papaparse";
 import { ArrowLeft, Check, Download, FileSpreadsheet, Rocket, UploadCloud } from "lucide-react";
@@ -49,6 +49,8 @@ export default function UploadPage() {
   const [over, setOver] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Where a stopped upload picks up again: the job it created and the next row. */
+  const [resume, setResume] = useState<{ id: string; next: number; dup: number } | null>(null);
 
   function load(file: File) {
     setError(null);
@@ -83,20 +85,40 @@ export default function UploadPage() {
     return { valid, companies, low, high, minutes: (low + high) / 2 / CHECKS_PER_MIN };
   }, [parsed, map]);
 
+  // Warn before closing the tab mid-upload: the job only starts once every row is in.
+  useEffect(() => {
+    if (progress === null) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [progress]);
+
   async function launch() {
     if (!parsed) return;
     setError(null);
     try {
-      setProgress(0);
+      setProgress(resume ? (resume.next / parsed.rows.length) * 100 : 0);
+      // Network blips and 5xx are retried; re-sending a chunk is safe (duplicates are skipped).
       const post = async (url: string, body: unknown) => {
-        const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error ?? res.statusText);
-        return json;
+        for (let attempt = 1; ; attempt++) {
+          let res: Response;
+          try {
+            res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          } catch (e) {
+            if (attempt >= 5) throw e;
+            await new Promise((r) => setTimeout(r, attempt * 3000));
+            continue;
+          }
+          const json = await res.json().catch(() => ({}));
+          if (res.ok) return json;
+          if (res.status < 500 || attempt >= 5) throw new Error(json.error ?? res.statusText);
+          await new Promise((r) => setTimeout(r, attempt * 3000));
+        }
       };
-      const { id } = await post("/api/jobs", { name: name || parsed.name, columns: parsed.headers });
-      let dup = 0;
-      for (let i = 0; i < parsed.rows.length; i += CHUNK) {
+      const id = resume?.id ?? (await post("/api/jobs", { name: name || parsed.name, columns: parsed.headers })).id;
+      let dup = resume?.dup ?? 0;
+      for (let i = resume?.next ?? 0; i < parsed.rows.length; i += CHUNK) {
+        setResume({ id, next: i, dup });
         const rows = parsed.rows.slice(i, i + CHUNK).map((r) => ({
           first: r[map.first] ?? "",
           last: map.last ? (r[map.last] ?? "") : "",
@@ -109,10 +131,11 @@ export default function UploadPage() {
         setProgress(Math.min(100, ((i + CHUNK) / parsed.rows.length) * 100));
       }
       await post(`/api/jobs/${id}/start`, {});
+      setResume(null);
       toast(`Launched ${name || parsed.name}: ${n(parsed.rows.length - dup)} people queued`);
       router.push(`/jobs/${id}`);
     } catch (e) {
-      setError((e as Error).message);
+      setError(`Upload stopped (${(e as Error).message}). Your rows so far are saved: press Resume upload to continue.`);
       setProgress(null);
     }
   }
@@ -200,7 +223,7 @@ export default function UploadPage() {
                 {n(parsed.rows.length)} rows · {parsed.headers.length} columns
               </span>
               <div className="panel-tools">
-                <button className="btn btn-ghost btn-sm" onClick={() => setParsed(null)} disabled={progress !== null}>
+                <button className="btn btn-ghost btn-sm" onClick={() => setParsed(null)} disabled={progress !== null || !!resume}>
                   <ArrowLeft size={13} /> Another file
                 </button>
               </div>
@@ -300,7 +323,7 @@ export default function UploadPage() {
               )}
               <span className="spacer" />
               <button className="btn btn-primary btn-lg" onClick={launch} disabled={!map.first || !map.domain || progress !== null}>
-                <Rocket size={16} /> Launch {est ? n(est.valid) : ""} lookups
+                <Rocket size={16} /> {resume ? `Resume upload (row ${n(resume.next + 1)})` : `Launch ${est ? n(est.valid) : ""} lookups`}
               </button>
             </div>
           </div>
