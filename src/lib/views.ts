@@ -170,24 +170,78 @@ export type DomainView = {
   checked_at: string | null;
   people: number;
   found: number;
+  /** Website pass: ok | robots | blocked | down, null until the site was read. */
+  scrape_outcome: string | null;
+  scraped_at: string | null;
+  site_emails: string[] | null;
+  mail_domain: string | null;
+  found_website: number;
+  total: number; // rows matching the current filters, for paging
 };
+
+/** Totals for the website pass, across every company read so far. */
+export type SiteTotals = {
+  read: number;
+  ok: number;
+  with_emails: number;
+  addresses: number;
+  mail_domains: number;
+  blocked: number;
+  robots: number;
+  down: number;
+  found_website: number;
+  moved_website: number;
+};
+
+/** Website filters on the Domains page. */
+export const SITE_FILTERS = {
+  emails: `jsonb_array_length(coalesce(d.site_emails, '[]'::jsonb)) > 0`,
+  mail_domain: `d.mail_domain is not null`,
+  unread: `d.scrape_outcome in ('blocked', 'robots', 'down')`,
+} as const;
+export type SiteFilter = keyof typeof SITE_FILTERS;
 
 export async function listDomains(
   db: Db,
-  o: { status?: string; q?: string; limit?: number; offset?: number } = {},
-): Promise<{ rows: DomainView[]; counts: Record<string, number> }> {
-  const [rows, counts] = await Promise.all([
+  o: { status?: string; site?: SiteFilter; q?: string; limit?: number; offset?: number } = {},
+): Promise<{ rows: DomainView[]; counts: Record<string, number>; siteCounts: Record<SiteFilter, number>; site: SiteTotals }> {
+  const siteWhere = o.site ? SITE_FILTERS[o.site] : "true";
+  const [rows, counts, [site]] = await Promise.all([
     db.query<DomainView>(
-      `select d.domain, d.status, d.pattern, d.checked_at,
-              count(r.id)::int as people, count(r.id) filter (where r.status = 'found')::int as found
+      `select d.domain, d.status, d.pattern, d.checked_at, d.scrape_outcome, d.scraped_at, d.site_emails, d.mail_domain,
+              count(r.id)::int as people, count(r.id) filter (where r.status = 'found')::int as found,
+              count(r.id) filter (where r.status = 'found' and r.reason = 'website')::int as found_website,
+              count(*) over ()::int as total
        from domains d left join job_rows r on r.domain = d.domain
-       where ($1::text is null or d.status = $1) and ($2::text is null or d.domain ilike '%' || $2 || '%')
+       where ($1::text is null or d.status = $1) and ($2::text is null or d.domain ilike '%' || $2 || '%') and ${siteWhere}
        group by d.domain order by max(d.updated_at) desc limit $3 offset $4`,
       [o.status ?? null, o.q || null, o.limit ?? 50, o.offset ?? 0],
     ),
     db.query<{ status: string; n: number }>(`select status, count(*)::int as n from domains group by 1`),
+    db.query<SiteTotals & Record<SiteFilter, number>>(
+      `select count(*) filter (where d.scraped_at is not null)::int as read,
+              count(*) filter (where d.scrape_outcome = 'ok')::int as ok,
+              count(*) filter (where ${SITE_FILTERS.emails})::int as with_emails,
+              coalesce(sum(jsonb_array_length(coalesce(d.site_emails, '[]'::jsonb))), 0)::int as addresses,
+              count(*) filter (where ${SITE_FILTERS.mail_domain})::int as mail_domains,
+              count(*) filter (where d.scrape_outcome = 'blocked')::int as blocked,
+              count(*) filter (where d.scrape_outcome = 'robots')::int as robots,
+              count(*) filter (where d.scrape_outcome = 'down')::int as down,
+              count(*) filter (where ${SITE_FILTERS.emails})::int as emails,
+              count(*) filter (where ${SITE_FILTERS.mail_domain})::int as mail_domain,
+              count(*) filter (where ${SITE_FILTERS.unread})::int as unread,
+              (select count(*)::int from job_rows where status = 'found' and reason = 'website') as found_website,
+              (select count(*)::int from job_rows where moved_via = 'website') as moved_website
+       from domains d`,
+    ),
   ]);
-  return { rows, counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) };
+  const { emails, mail_domain, unread, ...totals } = site;
+  return {
+    rows,
+    counts: Object.fromEntries(counts.map((c) => [c.status, c.n])),
+    siteCounts: { emails, mail_domain, unread },
+    site: totals,
+  };
 }
 
 // ---------- Insights: which combinations win, and where ----------
