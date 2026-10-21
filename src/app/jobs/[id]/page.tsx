@@ -141,6 +141,12 @@ export default function JobPage() {
                     <CountUp value={job.found} />
                   </span>
                 </div>
+                <div title="Published on the company's own website: found without a MailTester check">
+                  <span className="k">From websites</span>
+                  <span className="v" style={{ color: "var(--ok-ink)" }}>
+                    <CountUp value={job.found_website ?? 0} />
+                  </span>
+                </div>
                 <div>
                   <span className="k">Catch-all</span>
                   <span className="v" style={{ color: "var(--warn-ink)" }}>

@@ -60,6 +60,7 @@ services:
       RETRY_DELAY_MS: ${RETRY_DELAY_MS:-20000}
       SCOUT_MAX_PATTERNS: ${SCOUT_MAX_PATTERNS:-0}
       LADDER_MIN_FINDS: ${LADDER_MIN_FINDS:-300}
+      WEBSITE_PASS: ${WEBSITE_PASS:-on}
     depends_on:
       db: { condition: service_healthy }
       web: { condition: service_started }

@@ -52,6 +52,14 @@ alter table job_rows add column if not exists moved_from text;
 -- LinkedIn profile slug: the person's stable ID across uploads (never fetched).
 alter table job_rows add column if not exists linkedin text;
 create index if not exists job_rows_linkedin on job_rows (linkedin, domain) where linkedin is not null;
+-- Free website pass: the addresses a company publishes and the domain it uses for mail.
+alter table domains add column if not exists scraped_at timestamptz;
+alter table domains add column if not exists scrape_outcome text;      -- ok | robots | blocked | down
+alter table domains add column if not exists site_emails jsonb;
+alter table domains add column if not exists mail_domain text;
+-- "website" when the company's own site sent the person to another mail domain.
+alter table job_rows add column if not exists moved_via text;
+create index if not exists job_rows_domain on job_rows (domain);
 
 create table if not exists verifications (
   id bigserial primary key,

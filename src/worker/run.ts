@@ -8,6 +8,7 @@ import { findAlternateDomain, type DnsDeps } from "@/lib/dns";
 import { loadLadder, type LadderInfo } from "@/lib/ladder";
 import type { MtnClient } from "@/lib/mailtester";
 import * as repo from "@/lib/repo";
+import { mailDomainFrom, type ScrapeResult } from "@/lib/scrape";
 
 export type WorkerOptions = {
   db: Db;
@@ -19,6 +20,9 @@ export type WorkerOptions = {
   /** Look up every queued company's MX in the background, ahead of the MailTester queue. Needs `dns`. */
   mxPass?: boolean;
   mxConcurrency?: number;
+  /** Read each queued company's website for published addresses, ahead of MailTester. */
+  scrape?: (domain: string) => Promise<ScrapeResult>;
+  scrapeConcurrency?: number;
   concurrency?: number;
   // Pace measured by Prospect Sync on the Ultimate plan: 22 starts per 10s,
   // 450ms apart (25 per 10s got HTTP 429 within minutes).
@@ -103,6 +107,10 @@ export function startWorker(o: WorkerOptions) {
 
   // Once no free company is waiting, stop asking for a while (new ones appear as people get decided).
   let freeEmptyUntil = 0;
+  // While the website pass still has companies to read, MailTester only takes companies it has read.
+  let scrapeCaughtUp = false;
+  const waitForScrape = () => !!o.scrape && !scrapeCaughtUp;
+
   // Only some slots take free companies first, so MailTester never sits idle while they clear.
   const claim = async (freeFirst: boolean) => {
     const lookup = await repo.claimLookupDomain(db);
@@ -112,7 +120,7 @@ export function startWorker(o: WorkerOptions) {
       if (free) return free;
       freeEmptyUntil = Date.now() + 60_000;
     }
-    return repo.claimNextDomain(db);
+    return repo.claimNextDomain(db, 600, waitForScrape());
   };
 
   async function processOne(freeFirst: boolean): Promise<boolean> {
@@ -136,8 +144,8 @@ export function startWorker(o: WorkerOptions) {
           },
           findAlternate: (d: string) =>
             findAlternateDomain(d, dns, async (alt) => !(await repo.isDeadDomain(db, alt))),
-          onMove: async (id: string, alt: string, used: number) => {
-            await repo.movePerson(db, id, alt, used);
+          onMove: async (id: string, alt: string, used: number, via?: "website" | "alternate") => {
+            await repo.movePerson(db, id, alt, used, via);
             log(`${state.domain}: moved a person to ${alt}`);
           },
         }),
@@ -183,7 +191,7 @@ export function startWorker(o: WorkerOptions) {
         log(`claim failed: ${(e as Error).message}`);
       }
       if (!worked) {
-        if (o.exitWhenIdle && busy === 0) return;
+        if (o.exitWhenIdle && busy === 0 && !waitForScrape()) return;
         await sleep(o.idleMs ?? 2_000);
       }
     }
@@ -229,12 +237,62 @@ export function startWorker(o: WorkerOptions) {
     }
   }
 
+  // Free website pass: published addresses become finds at no cost, and a mail domain
+  // named on the site sends people there. Runs ahead of the MailTester queue.
+  async function scrapePass() {
+    if (!o.scrape) return;
+    const scrape = o.scrape;
+    const tried = new Set<string>();
+    while (!stopping && !slotsDone) {
+      let batch: string[] = [];
+      try {
+        batch = await repo.domainsToScrape(db, [...tried]);
+      } catch (e) {
+        log(`website pass query failed: ${(e as Error).message}`);
+      }
+      scrapeCaughtUp = batch.length === 0;
+      if (!batch.length) {
+        await sleep(o.idleMs ? o.idleMs * 5 : 30_000);
+        continue;
+      }
+      const tally = { sites: 0, withEmails: 0, emails: 0, mailDomains: 0, found: 0, requeued: 0 };
+      const queue = [...batch];
+      await Promise.all(
+        Array.from({ length: o.scrapeConcurrency ?? 20 }, async () => {
+          for (let d = queue.shift(); d && !stopping; d = queue.shift()) {
+            tried.add(d);
+            try {
+              const r = await scrape(d).catch((): ScrapeResult => ({ outcome: "down", host: null, emails: [], pages: 0 }));
+              let mail = mailDomainFrom(r.emails, d, r.host);
+              if (mail && dns && (await dns.mx(mail).catch(() => "error")) !== "mx") mail = null;
+              await repo.saveScrape(db, d, r, mail);
+              const up = await repo.upgradeFromSite(db, d, r.emails, mail);
+              tally.sites++;
+              if (r.emails.length) tally.withEmails++;
+              tally.emails += r.emails.length;
+              if (mail) tally.mailDomains++;
+              tally.found += up.found;
+              tally.requeued += up.requeued;
+            } catch (e) {
+              log(`website pass failed on ${d}: ${(e as Error).message}`);
+            }
+          }
+        }),
+      );
+      log(
+        `website pass: ${tally.sites} sites, ${tally.withEmails} with emails (${tally.emails} addresses), ` +
+          `${tally.mailDomains} other mail domains, ${tally.found} past results upgraded, ${tally.requeued} requeued`,
+      );
+    }
+  }
+
   const slots = Array.from({ length: o.concurrency ?? 12 }, (_, i) => slot(i % 2 === 0));
   const mx = mxPass();
+  const site = scrapePass();
   const done = Promise.all(slots)
     .then(() => {
       slotsDone = true;
-      return mx;
+      return Promise.all([mx, site]);
     })
     .finally(() => clearInterval(heartbeat));
 

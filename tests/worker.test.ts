@@ -320,3 +320,49 @@ describe("LinkedIn and the live ladder on a real schema", () => {
     expect(ladder).toMatchObject({ source: "default", finds: 2, cap: 0 }); // not enough finds yet to re-rank
   });
 });
+
+describe("website pass on a real schema", () => {
+  it("finds published addresses for free, upgrades past results, and follows the mail domain the site names", async () => {
+    const db = await memDb();
+    await repo.migrate(db);
+    // An earlier job already gave up on Varun (MailTester rejected every combination).
+    const old = await repo.createJob(db, { name: "old" });
+    await repo.addRows(db, old, 1, [row("Varun", "Jindal", "makemyhomez.in")]);
+    await repo.setJobStatus(db, old, "running");
+    await db.query(`update job_rows set status = 'not_found', reason = 'all_rejected' where job_id = $1`, [old]);
+
+    const jobId = await repo.createJob(db, { name: "new" });
+    await repo.addRows(db, jobId, 1, [
+      row("Tarun", "Jindal", "makemyhomez.in"),
+      row("Ajay", "Gupta", "makemyhomez.in"),
+      row("Ravi", "Kumar", "acme-group.com"), // the site says mail lives on acme.in
+    ]);
+    await repo.setJobStatus(db, jobId, "running");
+
+    const sites: Record<string, string[]> = {
+      "makemyhomez.in": ["info@makemyhomez.in", "tarun@makemyhomez.in", "varun@makemyhomez.in"],
+      "acme-group.com": ["info@acme.in"],
+      "acme.in": [],
+    };
+    const scraped: string[] = [];
+    const scrape = async (d: string) => (scraped.push(d), { outcome: "ok" as const, host: d, emails: sites[d] ?? [], pages: 1 });
+    const dns: DnsDeps = { mx: async () => "mx", redirect: async () => null };
+    const { mtn, calls } = fakeMtn({ catchAll: [], noMx: [], boxes: ["ravi.kumar@acme.in"] });
+    await startWorker({ db, mtn, dns, scrape, concurrency: 2, rateMax: 1000, minSpacingMs: 0, idleMs: 5, exitWhenIdle: true, sleep: tick, log: () => {} }).done;
+
+    const by = Object.fromEntries((await repo.listRows(db, jobId)).map((r) => [r.first, r]));
+    expect(by.tarun).toMatchObject({ status: "found", email: "tarun@makemyhomez.in", reason: "website", checks_used: 0 });
+    expect(calls.some((c) => c.startsWith("tarun"))).toBe(false);
+    expect(by.ajay).toMatchObject({ status: "not_found" });
+    expect(calls.filter((c) => c.endsWith("@makemyhomez.in"))[0]).toBe("ajay@makemyhomez.in"); // site proved first@
+    expect(by.ravi).toMatchObject({ status: "found", email: "ravi.kumar@acme.in", domain: "acme.in" });
+
+    const [varun] = await repo.listRows(db, old);
+    expect(varun).toMatchObject({ status: "found", email: "varun@makemyhomez.in", reason: "website" });
+
+    expect(await repo.getDomain(db, "acme-group.com")).toMatchObject({ mailDomain: "acme.in" });
+    expect(scraped.filter((d) => d === "makemyhomez.in")).toHaveLength(1); // read once, then remembered
+    const job = await repo.getJob(db, jobId);
+    expect(job).toMatchObject({ found: 2, found_website: 1 });
+  });
+});

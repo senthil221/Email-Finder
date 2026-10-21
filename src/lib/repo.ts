@@ -5,6 +5,7 @@ import type { DomainState, Person, PersonResult } from "./engine";
 import type { CachedVerdict } from "./checker";
 import type { MtnCall } from "./mailtester";
 import { cleanDomain, cleanName, isPatternId } from "./patterns";
+import { matchSiteEmail, type ScrapeResult } from "./scrape";
 import { SCHEMA_SQL } from "./schema";
 
 export async function migrate(db: Db) {
@@ -91,6 +92,8 @@ export type JobCounts = {
   total: number;
   pending: number;
   found: number;
+  /** Of the found, how many the company publishes on its own website (no check needed). */
+  found_website: number;
   catch_all: number;
   not_found: number;
   unverified: number;
@@ -102,6 +105,7 @@ const COUNTS_SQL = `
   count(r.id)::int as total,
   count(r.id) filter (where r.status = 'pending')::int as pending,
   count(r.id) filter (where r.status = 'found')::int as found,
+  count(r.id) filter (where r.status = 'found' and r.reason = 'website')::int as found_website,
   count(r.id) filter (where r.status = 'catch_all')::int as catch_all,
   count(r.id) filter (where r.status = 'not_found')::int as not_found,
   count(r.id) filter (where r.status = 'unverified')::int as unverified,
@@ -177,9 +181,13 @@ type DomainRow = {
   mx_checked_at: string | Date | null;
   alt_domain: string | null;
   alt_checked_at: string | Date | null;
+  site_emails: string[] | null;
+  mail_domain: string | null;
 };
 
-const DOMAIN_COLS = ["domain", "status", "pattern", "checked_at", "mx_checked_at", "alt_domain", "alt_checked_at"];
+const DOMAIN_COLS = [
+  "domain", "status", "pattern", "checked_at", "mx_checked_at", "alt_domain", "alt_checked_at", "site_emails", "mail_domain",
+];
 const date = (v: string | Date | null) => (v ? new Date(v) : null);
 
 function toState(r: DomainRow): DomainState {
@@ -191,6 +199,8 @@ function toState(r: DomainRow): DomainState {
     mxCheckedAt: date(r.mx_checked_at),
     alt: r.alt_domain,
     altCheckedAt: date(r.alt_checked_at),
+    siteEmails: Array.isArray(r.site_emails) ? r.site_emails : [],
+    mailDomain: r.mail_domain,
   };
 }
 
@@ -241,14 +251,18 @@ export const claimFreeDomain = (db: Db, lockSeconds = 600) =>
     lockSeconds,
   );
 
-/** Everything else, oldest row first (walks the pending-id index, so it stays fast on big lists). */
-export const claimNextDomain = (db: Db, lockSeconds = 600) =>
+/**
+ * Everything else, oldest row first (walks the pending-id index, so it stays fast on big lists).
+ * `scrapedOnly` waits for the free website pass, so MailTester is not spent on people the site lists.
+ */
+export const claimNextDomain = (db: Db, lockSeconds = 600, scrapedOnly = false) =>
   lockOne(
     db,
     `select d.domain from job_rows r
      join jobs j on j.id = r.job_id
      join domains d on d.domain = r.domain
      where r.status = 'pending' and j.status = 'running' and ${UNLOCKED}
+       ${scrapedOnly ? "and d.scraped_at is not null" : ""}
      order by r.id`,
     lockSeconds,
   );
@@ -306,7 +320,7 @@ export async function releaseDomain(db: Db, domain: string) {
 
 export async function pendingPeople(db: Db, domain: string, limit = 50): Promise<Person[]> {
   return db.query<Person>(
-    `select r.id::text as id, r.first, r.last, r.moved_from as "movedFrom", r.linkedin,
+    `select r.id::text as id, r.first, r.last, r.moved_from as "movedFrom", r.moved_via as "movedVia", r.linkedin,
        -- The same profile was found at this domain before: try that pattern first (usually a free cache hit).
        (select p.pattern from job_rows p where r.linkedin is not null and p.linkedin = r.linkedin
           and p.domain = r.domain and p.status = 'found' order by p.updated_at desc limit 1) as "knownPattern"
@@ -321,7 +335,7 @@ export async function saveResult(db: Db, rowId: string, r: PersonResult) {
   await db.query(
     `update job_rows set status = $2, email = $3, pattern = $4, reason = $5,
        checks_used = checks_used + $6, updated_at = now()
-     where id = $1`,
+     where id = $1 and status = 'pending'`, // the website pass may have found them meanwhile
     [rowId, r.status, r.email, r.pattern, r.reason, r.checksUsed],
   );
 }
@@ -335,13 +349,89 @@ export async function saveDomain(db: Db, s: DomainState) {
 }
 
 /** Restart a person on another domain (only ever once): pending there, checks so far kept. */
-export async function movePerson(db: Db, rowId: string, domain: string, checksUsed: number) {
+export async function movePerson(db: Db, rowId: string, domain: string, checksUsed: number, via = "alternate") {
   await db.query(`insert into domains (domain) values ($1) on conflict (domain) do nothing`, [domain]);
   await db.query(
-    `update job_rows set moved_from = domain, domain = $2, checks_used = checks_used + $3, updated_at = now()
+    `update job_rows set moved_from = domain, domain = $2, checks_used = checks_used + $3, moved_via = $4, updated_at = now()
      where id = $1 and moved_from is null`,
-    [rowId, domain, checksUsed],
+    [rowId, domain, checksUsed, via],
   );
+}
+
+// ---------- website pass ----------
+
+const STALE_SCRAPE = `(d.scraped_at is null or d.scraped_at < now() - interval '30 days')`;
+
+/**
+ * Companies whose website has not been read (in 30 days): first those of waiting people,
+ * oldest first so the pass stays ahead of the MailTester queue, then those of people
+ * already decided without an email (their results can still be upgraded).
+ */
+export async function domainsToScrape(db: Db, skip: string[], limit = 100): Promise<string[]> {
+  const ahead = await db.query<{ domain: string }>(
+    `select r.domain from job_rows r
+     join jobs j on j.id = r.job_id
+     join domains d on d.domain = r.domain
+     where r.status = 'pending' and j.status = 'running' and ${STALE_SCRAPE} and not (r.domain = any($1::text[]))
+     order by r.id limit $2`,
+    [skip, limit * 4],
+  );
+  const list = [...new Set(ahead.map((r) => r.domain))].slice(0, limit);
+  if (list.length) return list;
+  const behind = await db.query<{ domain: string }>(
+    `select d.domain from domains d
+     where ${STALE_SCRAPE} and not (d.domain = any($1::text[]))
+       and exists (select 1 from job_rows r join jobs j on j.id = r.job_id
+                   where r.domain = d.domain and r.status in ('not_found', 'catch_all', 'unverified') and j.status = 'running')
+     limit $2`,
+    [skip, limit],
+  );
+  return behind.map((r) => r.domain);
+}
+
+export async function saveScrape(db: Db, domain: string, r: ScrapeResult, mailDomain: string | null) {
+  await db.query(
+    `update domains set scraped_at = now(), scrape_outcome = $2, site_emails = $3::jsonb, mail_domain = $4, updated_at = now()
+     where domain = $1`,
+    [domain, r.outcome, JSON.stringify(r.emails), mailDomain],
+  );
+}
+
+/**
+ * Apply a company's published addresses to people already decided without an email:
+ * a match becomes found (reason "website"); when the site names another mail domain,
+ * the rest go back to the queue there. Returns how many were found and requeued.
+ */
+export async function upgradeFromSite(
+  db: Db,
+  domain: string,
+  emails: string[],
+  mailDomain: string | null,
+): Promise<{ found: number; requeued: number }> {
+  const rows = await db.query<{ id: string; first: string; last: string; linkedin: string | null; moved_from: string | null }>(
+    `select r.id::text as id, r.first, r.last, r.linkedin, r.moved_from from job_rows r join jobs j on j.id = r.job_id
+     where r.domain = $1 and r.status in ('not_found', 'catch_all', 'unverified') and j.status <> 'cancelled'`,
+    [domain],
+  );
+  const domains = [domain, mailDomain].filter((d): d is string => !!d);
+  let found = 0;
+  let requeued = 0;
+  for (const r of rows) {
+    const name = r.linkedin ? fillName(r.first, r.last, r.linkedin) : r;
+    const hit = matchSiteEmail(name.first, name.last, emails, domains);
+    if (hit) {
+      await db.query(
+        `update job_rows set status = 'found', email = $2, pattern = $3, reason = 'website', updated_at = now() where id = $1`,
+        [r.id, hit.email, hit.pattern],
+      );
+      found++;
+    } else if (mailDomain && mailDomain !== domain && !r.moved_from) {
+      await movePerson(db, r.id, mailDomain, 0, "website");
+      await db.query(`update job_rows set status = 'pending', reason = null, email = null, pattern = null where id = $1`, [r.id]);
+      requeued++;
+    }
+  }
+  return { found, requeued };
 }
 
 /** Known dead within `days` (no MX): not worth moving people to. */

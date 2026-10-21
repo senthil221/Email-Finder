@@ -1,6 +1,7 @@
 // Per-company logic: scout first, reuse the proven pattern, park catch-alls.
 import { fillName, handleHint } from "./linkedin";
 import { candidates, parseName, type Ladder, type PatternId } from "./patterns";
+import { matchSiteEmail } from "./scrape";
 
 export type DomainStatus = "unknown" | "valid" | "catch_all" | "not_found" | "no_mx";
 
@@ -14,10 +15,15 @@ export type DomainState = {
   /** Where people go when this domain fails: website redirect or .in/.com/.co.in twin. */
   alt?: string | null;
   altCheckedAt?: Date | null;
+  /** Addresses the company publishes on its own website (free, from the scrape pass). */
+  siteEmails?: string[];
+  /** The domain its website says it uses for email, when that is not the website domain. */
+  mailDomain?: string | null;
 };
 
 /**
- * `movedFrom` is set once a person was restarted on an alternate domain (it only happens once).
+ * `movedFrom` is set once a person was restarted on an alternate domain (it only happens once);
+ * `movedVia` is "website" when the company's own site named that domain (then every pattern counts there).
  * `linkedin` is the profile slug; `knownPattern` is what found this same profile at this domain before.
  */
 export type Person = {
@@ -25,6 +31,7 @@ export type Person = {
   first: string;
   last: string;
   movedFrom?: string | null;
+  movedVia?: string | null;
   linkedin?: string | null;
   knownPattern?: PatternId | null;
 };
@@ -39,7 +46,8 @@ export type Reason =
   | "domain_parked" // old runs only: 2 scouts failed and the rest were skipped
   | "some_unverifiable" // some combinations could not be checked (timeouts, blocks)
   | "server_unreachable" // 2 people in a row hit a server that kept timing out
-  | "bad_input";
+  | "bad_input"
+  | "website"; // found: the company publishes this address on its own website
 
 export type PersonResult = {
   status: PersonStatus;
@@ -156,7 +164,7 @@ export async function processDomain(args: {
   /** Free lookup of another mail domain for this company (redirect or twin), null if none. */
   findAlternate?: (domain: string) => Promise<string | null>;
   /** Restart a person on another domain: they go back to pending there. */
-  onMove?: (personId: string, domain: string, checksUsed: number) => Promise<void>;
+  onMove?: (personId: string, domain: string, checksUsed: number, via?: "website" | "alternate") => Promise<void>;
   /** Try order and cap for the base patterns (from your own finds). */
   ladder?: Ladder;
   now?: () => Date;
@@ -205,8 +213,28 @@ export async function processDomain(args: {
     return true;
   };
 
+  /** This person's address as published on the company website, if it is there. */
+  const fromSite = (person: Person) => {
+    if (!state.siteEmails?.length) return null;
+    const name = person.linkedin ? fillName(person.first, person.last, person.linkedin) : person;
+    const domains = [state.status === "no_mx" ? null : state.domain, state.mailDomain].filter((d): d is string => !!d);
+    return matchSiteEmail(name.first, name.last, state.siteEmails, domains);
+  };
+
   let stuckScouts = 0;
   for (const person of args.people) {
+    // Published by the company itself: found, no check needed.
+    const site = fromSite(person);
+    if (site) {
+      await args.onResult(person.id, { status: "found", email: site.email, pattern: site.pattern, reason: "website", checksUsed: 0 });
+      if (state.status === "unknown" && site.email.endsWith(`@${state.domain}`)) await setState({ status: "valid", pattern: site.pattern });
+      continue;
+    }
+    // The website says mail lives on another domain: everyone goes there (once).
+    if (state.mailDomain && state.mailDomain !== state.domain && state.status !== "valid" && !person.movedFrom && args.onMove) {
+      await args.onMove(person.id, state.mailDomain, 0, "website");
+      continue;
+    }
     if (stuckScouts >= MAX_STUCK_SCOUTS && state.status === "unknown") {
       // Not proven wrong, just unreachable right now: skip without remembering it,
       // so a later upload tries this company again.
@@ -223,7 +251,7 @@ export async function processDomain(args: {
     }
     const known = state.status === "valid" ? state.pattern : null;
     let r = await findPerson(person, state.domain, known, args.check, {
-      fullNameOnly: !!person.movedFrom,
+      fullNameOnly: !!person.movedFrom && person.movedVia !== "website",
       ladder: args.ladder,
     });
     // The company's pattern works for colleagues: a full miss usually means they left (stale list).

@@ -386,3 +386,55 @@ describe("alternate domain safety", () => {
     expect(noSurname).toMatchObject({ status: "not_found", reason: "all_rejected", checksUsed: 0 });
   });
 });
+
+describe("processDomain: addresses from the company website", () => {
+  it("a published address is found with zero checks and proves the company pattern", async () => {
+    const state: DomainState = {
+      ...fresh("makemyhomez.in"),
+      siteEmails: ["info@makemyhomez.in", "tarun@makemyhomez.in", "varun@makemyhomez.in"],
+    };
+    // MailTester rejects everything here (a blind server): only the website can find them.
+    const { results, calls, final } = await run(state, [p("1", "Tarun", "Jindal"), p("2", "Varun", "Jindal")], { boxes: new Set() });
+    expect(results["1"]).toMatchObject({ status: "found", email: "tarun@makemyhomez.in", pattern: "first", reason: "website", checksUsed: 0 });
+    expect(results["2"]).toMatchObject({ status: "found", email: "varun@makemyhomez.in", reason: "website", checksUsed: 0 });
+    expect(calls).toHaveLength(0);
+    expect(final).toMatchObject({ status: "valid", pattern: "first" });
+  });
+
+  it("people not on the site start on the pattern the site proved", async () => {
+    const state: DomainState = { ...fresh("acme.in"), siteEmails: ["ravi.kumar@acme.in"] };
+    const { results, calls } = await run(state, [p("1", "Ravi", "Kumar"), p("2", "Anu", "Priya")], { boxes: new Set(["anu.priya@acme.in"]) });
+    expect(results["1"].reason).toBe("website");
+    expect(results["2"]).toMatchObject({ status: "found", email: "anu.priya@acme.in", checksUsed: 1 });
+    expect(calls).toEqual(["anu.priya@acme.in"]);
+  });
+
+  it("a catch-all company still gets the people its website lists", async () => {
+    const state: DomainState = { domain: "big.com", status: "catch_all", pattern: null, checkedAt: new Date(), siteEmails: ["amit.shah@big.com"] };
+    const { results } = await run(state, [p("1", "Amit", "Shah"), p("2", "Ravi", "Kumar")], { boxes: new Set() });
+    expect(results["1"]).toMatchObject({ status: "found", reason: "website" });
+    expect(results["2"]).toMatchObject({ status: "catch_all" });
+  });
+
+  it("a mail domain named on the website sends everyone there, where every pattern counts", async () => {
+    const moved: [string, string, number, string | undefined][] = [];
+    const final = await processDomain({
+      state: { ...fresh("acme-group.com"), siteEmails: ["info@acme.in"], mailDomain: "acme.in" },
+      people: [p("1", "Ravi", "Kumar"), p("2", "Anu", "Priya", "other.in")],
+      check: fakeCheck({ boxes: new Set() }).check,
+      onResult: async () => {},
+      onDomain: async () => {},
+      onMove: async (id, d, used, via) => {
+        moved.push([id, d, used, via]);
+      },
+    });
+    expect(moved).toEqual([["1", "acme.in", 0, "website"]]); // person 2 was already moved once
+    expect(final.status).toBe("unknown");
+
+    // On the mail domain, a website move does not restrict to full-name patterns (ravi@ counts).
+    const there = await run(fresh("acme.in"), [{ id: "1", first: "Ravi", last: "Kumar", movedFrom: "acme-group.com", movedVia: "website" }], {
+      boxes: new Set(["ravi@acme.in"]),
+    });
+    expect(there.results["1"]).toMatchObject({ status: "found", email: "ravi@acme.in" });
+  });
+});

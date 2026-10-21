@@ -282,7 +282,7 @@ export default function InsightsPage() {
             {(d?.outcomes ?? []).map((o) => (
               <Hb
                 key={o.status + o.reason}
-                label={o.status === "found" ? "Found" : REASON_LABEL[o.reason ?? ""] ?? STATUS_LABEL[o.status]}
+                label={o.status === "found" ? (o.reason === "website" ? "Found on website" : "Found") : REASON_LABEL[o.reason ?? ""] ?? STATUS_LABEL[o.status]}
                 v={o.n}
                 max={Math.max(...(d?.outcomes ?? []).map((x) => x.n))}
                 color={OUTCOME_COLOR[o.status]}

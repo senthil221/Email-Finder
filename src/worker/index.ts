@@ -1,6 +1,7 @@
 // Entry point: `npm run worker`. Reads settings from environment variables.
 import { pgDb } from "@/lib/db";
 import { realDns } from "@/lib/dns";
+import { scrapeSite } from "@/lib/scrape";
 import { createMtnClient } from "@/lib/mailtester";
 import { migrate, setWorkerStatus } from "@/lib/repo";
 import { startWorker } from "./run";
@@ -38,6 +39,7 @@ async function main() {
     dns: realDns,
     smartLadder: true,
     mxPass: true,
+    scrape: process.env.WEBSITE_PASS === "off" ? undefined : (d: string) => scrapeSite(d),
     concurrency,
     rateMax: num("MTN_RATE_MAX", 22),
     rateWindowMs: num("MTN_RATE_WINDOW_MS", 10_000),
