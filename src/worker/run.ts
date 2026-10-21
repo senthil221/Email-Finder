@@ -103,10 +103,11 @@ export function startWorker(o: WorkerOptions) {
 
   // Once no free company is waiting, stop asking for a while (new ones appear as people get decided).
   let freeEmptyUntil = 0;
-  const claim = async () => {
+  // Only some slots take free companies first, so MailTester never sits idle while they clear.
+  const claim = async (freeFirst: boolean) => {
     const lookup = await repo.claimLookupDomain(db);
     if (lookup) return lookup;
-    if (Date.now() >= freeEmptyUntil) {
+    if (freeFirst && Date.now() >= freeEmptyUntil) {
       const free = await repo.claimFreeDomain(db);
       if (free) return free;
       freeEmptyUntil = Date.now() + 60_000;
@@ -114,8 +115,8 @@ export function startWorker(o: WorkerOptions) {
     return repo.claimNextDomain(db);
   };
 
-  async function processOne(): Promise<boolean> {
-    const state = await claim();
+  async function processOne(freeFirst: boolean): Promise<boolean> {
+    const state = await claim(freeFirst);
     if (!state) return false;
     busy++;
     const keepLock = setInterval(() => repo.extendLock(db, state.domain).catch(() => {}), 120_000);
@@ -169,7 +170,7 @@ export function startWorker(o: WorkerOptions) {
     return true;
   }
 
-  async function slot() {
+  async function slot(freeFirst: boolean) {
     while (!stopping) {
       if (Date.now() < pauseUntil) {
         await sleep(Math.min(30_000, pauseUntil - Date.now()));
@@ -177,7 +178,7 @@ export function startWorker(o: WorkerOptions) {
       }
       let worked = false;
       try {
-        worked = await processOne();
+        worked = await processOne(freeFirst);
       } catch (e) {
         log(`claim failed: ${(e as Error).message}`);
       }
@@ -228,7 +229,7 @@ export function startWorker(o: WorkerOptions) {
     }
   }
 
-  const slots = Array.from({ length: o.concurrency ?? 12 }, () => slot());
+  const slots = Array.from({ length: o.concurrency ?? 12 }, (_, i) => slot(i % 2 === 0));
   const mx = mxPass();
   const done = Promise.all(slots)
     .then(() => {
