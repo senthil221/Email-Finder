@@ -1,5 +1,6 @@
 // The name combinations, in the order they are tried: the 9 base ones first,
-// then a few extras for multi-word given names (common in Indian names).
+// then extras: multi-word given names (common in Indian names), then
+// surname-first and other rarer styles, so nobody at a live company is missed.
 // To change the order, just reorder these arrays.
 export type BasePatternId =
   | "first"
@@ -12,7 +13,16 @@ export type BasePatternId =
   | "fl"
   | "f.last";
 
-export type ExtraPatternId = "first1.first2" | "first1" | "first1.last";
+export type ExtraPatternId =
+  | "first1.first2"
+  | "first1"
+  | "first1.last"
+  | "last.first"
+  | "first-last"
+  | "lastfirst"
+  | "last.f"
+  | "lastf"
+  | "last";
 
 export type PatternId = BasePatternId | ExtraPatternId;
 
@@ -38,11 +48,18 @@ export const PATTERNS: { id: BasePatternId; build: Builder }[] = [
   { id: "f.last", build: ({ first: f, last: l, initialOnly }) => (l && !initialOnly ? `${f[0]}.${l}` : null) },
 ];
 
-/** Tried after the base 9, only for two-word given names ("Senthil Nathan"). */
+/** Tried after the base 9. The first three only for two-word given names ("Senthil Nathan"). */
 export const EXTRA_PATTERNS: { id: ExtraPatternId; build: Builder }[] = [
   { id: "first1.first2", build: ({ words: w }) => (w.length > 1 ? `${w[0]}.${w[1]}` : null) },
   { id: "first1", build: ({ words: w }) => (w.length > 1 ? w[0] : null) },
   { id: "first1.last", build: ({ words: w, last: l }) => (w.length > 1 && l ? `${w[0]}.${l}` : null) },
+  // Surname-first and dashed styles need a real surname, not an initial.
+  { id: "last.first", build: ({ first: f, last: l, initialOnly }) => (l && !initialOnly ? `${l}.${f}` : null) },
+  { id: "first-last", build: ({ first: f, last: l, initialOnly }) => (l && !initialOnly ? `${f}-${l}` : null) },
+  { id: "lastfirst", build: ({ first: f, last: l, initialOnly }) => (l && !initialOnly ? `${l}${f}` : null) },
+  { id: "last.f", build: ({ first: f, last: l, initialOnly }) => (l && !initialOnly ? `${l}.${f[0]}` : null) },
+  { id: "lastf", build: ({ first: f, last: l, initialOnly }) => (l && !initialOnly ? `${l}${f[0]}` : null) },
+  { id: "last", build: ({ last: l, initialOnly }) => (l && !initialOnly ? l : null) },
 ];
 
 export const ALL_PATTERNS = [...PATTERNS, ...EXTRA_PATTERNS];

@@ -159,7 +159,7 @@ describe("free DNS steps on a real schema", () => {
     const by = Object.fromEntries(rows.map((r) => [r.first, r]));
     expect(by.old).toMatchObject({ status: "not_found", reason: "no_mx", checks_used: 0 });
     expect(calls.some((c) => c.includes("nomail"))).toBe(false);
-    expect(by.ravi).toMatchObject({ status: "found", email: "ravi.kumar@parked.com", domain: "parked.com", checks_used: 10 }); // ravi@ is skipped on the twin domain
+    expect(by.ravi).toMatchObject({ status: "found", email: "ravi.kumar@parked.com", domain: "parked.com", checks_used: 16 }); // 15 on parked.in, then ravi@ is skipped on the twin domain
     expect(by["dr senthil nathan"]).toMatchObject({ status: "found", email: "senthil.nathan@b2b.in", pattern: "first1.first2" });
 
     const [moved] = await db.query<{ moved_from: string }>(`select moved_from from job_rows where first = 'ravi'`);

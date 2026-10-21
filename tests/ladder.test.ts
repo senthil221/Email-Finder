@@ -14,20 +14,21 @@ describe("smart ladder", () => {
 
   it("tries base patterns in ladder order up to the cap, then the multi-word extras", () => {
     const order = rankPatterns([{ pattern: "first.last", n: 5 }, { pattern: "first", n: 4 }, { pattern: "first.l", n: 3 }]);
-    expect(locals(candidates("andrew", "deepak", "x.com", null, { order, cap: 3 }))).toEqual(["andrew.deepak", "andrew", "andrew.d"]);
+    expect(locals(candidates("andrew", "deepak", "x.com", null, { order, cap: 3 }))).toEqual(["andrew.deepak", "andrew", "andrew.d", "deepak.andrew", "andrew-deepak", "deepakandrew", "deepak.a", "deepaka", "deepak"]);
     expect(locals(candidates("senthil nathan", "kumar", "x.in", null, { order, cap: 2 }))).toEqual([
       "senthilnathan.kumar", "senthilnathan", "senthil.nathan", "senthil", "senthil.kumar",
+      "kumar.senthilnathan", "senthilnathan-kumar", "kumarsenthilnathan", "kumar.s", "kumars", "kumar",
     ]);
   });
 
   it("preferred patterns always go first, even past the cap", () => {
     expect(locals(candidates("andrew", "deepak", "x.com", ["f.last", null, "flast"], { cap: 2 }))).toEqual([
-      "a.deepak", "adeepak", "andrew", "andrew.deepak",
+      "a.deepak", "adeepak", "andrew", "andrew.deepak", "deepak.andrew", "andrew-deepak", "deepakandrew", "deepak.a", "deepaka", "deepak",
     ]);
   });
 
-  it("cap 0 means all nine", () => {
-    expect(candidates("andrew", "deepak", "x.com", null, { cap: 0 })).toHaveLength(9);
+  it("cap 0 means all nine, plus the extras", () => {
+    expect(candidates("andrew", "deepak", "x.com", null, { cap: 0 })).toHaveLength(15);
   });
 });
 

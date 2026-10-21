@@ -33,6 +33,7 @@ export type PersonStatus = "found" | "catch_all" | "not_found" | "unverified";
 
 export type Reason =
   | "all_rejected" // every combination was rejected
+  | "probably_left" // every combination rejected at a company whose pattern works for others
   | "catch_all" // company server accepts everything
   | "no_mx" // domain cannot receive mail
   | "domain_parked" // old runs only: 2 scouts failed and the rest were skipped
@@ -84,7 +85,17 @@ const parked = (reason: Reason, status: PersonStatus = "not_found"): PersonResul
  * (a .in/.com twin can be a different company) only these count: "amit@" at
  * someone else's company is likely another Amit, "amit.shah@" almost never is.
  */
-export const FULL_NAME_PATTERNS = new Set<PatternId>(["first.last", "firstlast", "first_last", "flast", "f.last", "first1.last"]);
+export const FULL_NAME_PATTERNS = new Set<PatternId>([
+  "first.last",
+  "firstlast",
+  "first_last",
+  "flast",
+  "f.last",
+  "first1.last",
+  "last.first",
+  "first-last",
+  "lastfirst",
+]);
 
 /** Try one person's combinations one at a time; stop at the first valid. */
 export async function findPerson(
@@ -211,10 +222,12 @@ export async function processDomain(args: {
       continue;
     }
     const known = state.status === "valid" ? state.pattern : null;
-    const r = await findPerson(person, state.domain, known, args.check, {
+    let r = await findPerson(person, state.domain, known, args.check, {
       fullNameOnly: !!person.movedFrom,
       ladder: args.ladder,
     });
+    // The company's pattern works for colleagues: a full miss usually means they left (stale list).
+    if (state.status === "valid" && r.reason === "all_rejected" && !person.movedFrom) r = { ...r, reason: "probably_left" };
     // Rejected everywhere on a company not proven yet: maybe the wrong domain.
     const wrongDomain =
       r.status === "not_found" && (r.reason === "no_mx" || (r.reason === "all_rejected" && state.status !== "valid"));

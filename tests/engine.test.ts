@@ -89,11 +89,11 @@ describe("processDomain", () => {
     const w = { boxes: new Set(["zed@x.com"]) };
     const people = [p("1", "andrew", "deepak"), p("2", "ravi", "kumar"), p("3", "zed", "z")];
     const { final, results, calls } = await run(fresh("x.com"), people, w);
-    expect(results["1"]).toMatchObject({ status: "not_found", reason: "all_rejected", checksUsed: 9 });
-    expect(results["2"]).toMatchObject({ status: "not_found", reason: "all_rejected", checksUsed: 9 });
+    expect(results["1"]).toMatchObject({ status: "not_found", reason: "all_rejected", checksUsed: 15 });
+    expect(results["2"]).toMatchObject({ status: "not_found", reason: "all_rejected", checksUsed: 15 });
     expect(results["3"]).toMatchObject({ status: "found", email: "zed@x.com", checksUsed: 1 });
     expect(final.status).toBe("valid");
-    expect(calls).toHaveLength(19);
+    expect(calls).toHaveLength(31);
   });
 
   it("a company parked by an older run is tried again", async () => {
@@ -114,7 +114,7 @@ describe("processDomain", () => {
   it("unverifiable combinations give 'unverified', not 'not_found'", async () => {
     const w = { boxes: new Set<string>(), stuck: new Set(["andrew@x.com"]) };
     const { results } = await run(fresh("x.com"), [p("1", "andrew", "deepak")], w);
-    expect(results["1"]).toMatchObject({ status: "unverified", reason: "some_unverifiable", checksUsed: 10 });
+    expect(results["1"]).toMatchObject({ status: "unverified", reason: "some_unverifiable", checksUsed: 16 });
   });
 
   it("a server that times out on everything costs 3 attempts per person, then the company is skipped", async () => {
@@ -228,9 +228,9 @@ describe("processDomain: free DNS steps", () => {
       { alt: "x.com" },
     );
     expect(moves).toEqual([
-      ["1", "x.com", 9],
-      ["2", "x.com", 9],
-      ["3", "x.com", 9], // each person gets every combination here first
+      ["1", "x.com", 15],
+      ["2", "x.com", 15],
+      ["3", "x.com", 15], // each person gets every combination here first
     ]);
     expect(results).toEqual({});
     expect(final).toMatchObject({ status: "unknown", alt: "x.com" });
@@ -247,7 +247,7 @@ describe("processDomain: free DNS steps", () => {
     const state: DomainState = { domain: "x.in", status: "valid", pattern: "first", checkedAt: new Date() };
     const { results, moves } = await runDns(state, [p("1", "andrew", "deepak")], { boxes: new Set() }, { alt: "x.com" });
     expect(moves).toEqual([]);
-    expect(results["1"].reason).toBe("all_rejected");
+    expect(results["1"].reason).toBe("probably_left");
   });
 });
 

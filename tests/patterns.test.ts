@@ -3,7 +3,7 @@ import { candidates, cleanDomain, cleanName, parseName } from "@/lib/patterns";
 
 describe("candidates", () => {
   it("builds the 9 combinations in Fable's order", () => {
-    expect(candidates("andrew", "deepak", "x.com").map((c) => c.email)).toEqual([
+    expect(candidates("andrew", "deepak", "x.com").slice(0, 9).map((c) => c.email)).toEqual([
       "andrew@x.com",
       "andrew.deepak@x.com",
       "andrewdeepak@x.com",
@@ -16,10 +16,17 @@ describe("candidates", () => {
     ]);
   });
 
+  it("then the surname-first and dashed styles", () => {
+    expect(candidates("andrew", "deepak", "x.com").slice(9).map((c) => c.pattern)).toEqual([
+      "last.first", "first-last", "lastfirst", "last.f", "lastf", "last",
+    ]);
+    expect(candidates("andrew", "deepak", "x.com").slice(9).map((c) => c.email.split("@")[0])).toEqual(["deepak.andrew", "andrew-deepak", "deepakandrew", "deepak.a", "deepaka", "deepak"]);
+  });
+
   it("puts the company's known pattern first", () => {
     const list = candidates("andrew", "deepak", "x.com", "flast");
     expect(list[0]).toEqual({ pattern: "flast", email: "adeepak@x.com" });
-    expect(list).toHaveLength(9);
+    expect(list).toHaveLength(15);
   });
 
   it("only tries first@ when the last name is missing", () => {
@@ -70,7 +77,7 @@ describe("Indian names", () => {
       "first", "first.last", "firstlast", "flast", "firstl", "first.l", "first_last", "fl", "f.last",
     ]);
     expect(list[1].email).toBe("senthilnathan.kumar@x.in");
-    expect(list.slice(9)).toEqual([
+    expect(list.slice(9, 12)).toEqual([
       { pattern: "first1.first2", email: "senthil.nathan@x.in" },
       { pattern: "first1", email: "senthil@x.in" },
       { pattern: "first1.last", email: "senthil.kumar@x.in" },
@@ -104,6 +111,6 @@ describe("Indian names", () => {
   });
 
   it("one-word names are unchanged", () => {
-    expect(locals("andrew", "deepak")).toHaveLength(9);
+    expect(locals("andrew", "deepak")).toHaveLength(15);
   });
 });

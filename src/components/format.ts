@@ -27,6 +27,7 @@ export const STATUS_LABEL: Record<string, string> = {
 
 export const REASON_LABEL: Record<string, string> = {
   all_rejected: "Every combination was rejected",
+  probably_left: "Probably left: company pattern works, this person rejected",
   catch_all: "Server accepts every address",
   no_mx: "Domain cannot receive email",
   domain_parked: "Skipped (older run): 2 people here had no match",
@@ -48,6 +49,12 @@ export const PATTERN_LABEL: Record<string, string> = {
   "first1.first2": "first1.first2@",
   first1: "first1@",
   "first1.last": "first1.last@",
+  "last.first": "last.first@",
+  "first-last": "first-last@",
+  lastfirst: "lastfirst@",
+  "last.f": "last.f@",
+  lastf: "lastf@",
+  last: "last@",
 };
 
 export function jobState(job: { status: string; pending: number }): string {
