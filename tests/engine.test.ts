@@ -85,15 +85,22 @@ describe("processDomain", () => {
     expect(results["2"]).toMatchObject({ status: "not_found", reason: "no_mx", checksUsed: 0 });
   });
 
-  it("two failed scouts park the rest of the company", async () => {
+  it("misses never skip the rest: everyone at a live company gets every combination", async () => {
     const w = { boxes: new Set(["zed@x.com"]) };
     const people = [p("1", "andrew", "deepak"), p("2", "ravi", "kumar"), p("3", "zed", "z")];
     const { final, results, calls } = await run(fresh("x.com"), people, w);
     expect(results["1"]).toMatchObject({ status: "not_found", reason: "all_rejected", checksUsed: 9 });
-    expect(results["2"]).toMatchObject({ status: "not_found", reason: "all_rejected" });
-    expect(results["3"]).toMatchObject({ status: "not_found", reason: "domain_parked", checksUsed: 0 });
-    expect(final.status).toBe("not_found");
-    expect(calls).toHaveLength(18);
+    expect(results["2"]).toMatchObject({ status: "not_found", reason: "all_rejected", checksUsed: 9 });
+    expect(results["3"]).toMatchObject({ status: "found", email: "zed@x.com", checksUsed: 1 });
+    expect(final.status).toBe("valid");
+    expect(calls).toHaveLength(19);
+  });
+
+  it("a company parked by an older run is tried again", async () => {
+    const state: DomainState = { domain: "x.com", status: "not_found", pattern: null, checkedAt: new Date() };
+    const { results, calls } = await run(state, [p("1", "zed", "z")], { boxes: new Set(["zed@x.com"]) });
+    expect(calls).toHaveLength(1);
+    expect(results["1"]).toMatchObject({ status: "found", email: "zed@x.com" });
   });
 
   it("a scout that fails once does not park the company if the next one wins", async () => {
@@ -223,10 +230,10 @@ describe("processDomain: free DNS steps", () => {
     expect(moves).toEqual([
       ["1", "x.com", 9],
       ["2", "x.com", 9],
-      ["3", "x.com", 0], // parked company: the rest go straight over
+      ["3", "x.com", 9], // each person gets every combination here first
     ]);
     expect(results).toEqual({});
-    expect(final).toMatchObject({ status: "not_found", alt: "x.com" });
+    expect(final).toMatchObject({ status: "unknown", alt: "x.com" });
     expect(altAsked()).toBe(1); // looked up once, then remembered
   });
 

@@ -29,7 +29,7 @@ export const REASON_LABEL: Record<string, string> = {
   all_rejected: "Every combination was rejected",
   catch_all: "Server accepts every address",
   no_mx: "Domain cannot receive email",
-  domain_parked: "Skipped: 2 people here had no match",
+  domain_parked: "Skipped (older run): 2 people here had no match",
   some_unverifiable: "Some combinations could not be checked",
   server_unreachable: "Skipped: mail server kept timing out",
   bad_input: "Missing first name or domain",

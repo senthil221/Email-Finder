@@ -266,10 +266,10 @@ export async function movePerson(db: Db, rowId: string, domain: string, checksUs
   );
 }
 
-/** Known dead within `days` (no MX, or every scout rejected): not worth moving people to. */
+/** Known dead within `days` (no MX): not worth moving people to. */
 export async function isDeadDomain(db: Db, domain: string, days = 60): Promise<boolean> {
   const rows = await db.query(
-    `select 1 from domains where domain = $1 and status in ('no_mx', 'not_found')
+    `select 1 from domains where domain = $1 and status = 'no_mx'
        and checked_at > now() - make_interval(days => $2)`,
     [domain, days],
   );

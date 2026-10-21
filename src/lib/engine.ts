@@ -35,7 +35,7 @@ export type Reason =
   | "all_rejected" // every combination was rejected
   | "catch_all" // company server accepts everything
   | "no_mx" // domain cannot receive mail
-  | "domain_parked" // 2 scouts failed: probably the wrong mail domain
+  | "domain_parked" // old runs only: 2 scouts failed and the rest were skipped
   | "some_unverifiable" // some combinations could not be checked (timeouts, blocks)
   | "server_unreachable" // 2 people in a row hit a server that kept timing out
   | "bad_input";
@@ -60,7 +60,8 @@ export type Checker = (email: string, pattern?: string) => Promise<CheckOutcome>
 export const STALE_DAYS = 60;
 /** DNS answers (MX present, alternate domain) are re-checked after this many days. */
 export const DNS_FRESH_DAYS = 7;
-export const MAX_FAILED_SCOUTS = 2;
+/** After this many people in a row could not be checked at all, skip the rest of the company for now. */
+export const MAX_STUCK_SCOUTS = 2;
 /** Stop a person after this many unverifiable answers in a row with no rejection yet. */
 export const MAX_STUCK_IN_A_ROW = 3;
 
@@ -157,9 +158,10 @@ export async function processDomain(args: {
   };
   const setState = (patch: Partial<DomainState>) => patchState({ ...patch, checkedAt: now() });
 
-  // A catch-all / no-MX / parked verdict older than STALE_DAYS gets re-checked.
-  // A fresh one parks everyone below without spending checks.
-  if (state.status !== "valid" && state.status !== "unknown" && !isFresh(state, now())) {
+  // A catch-all / no-MX verdict older than STALE_DAYS gets re-checked.
+  // A fresh one parks everyone below without spending checks. "not_found" is
+  // no longer a company verdict: every person at a live domain gets every combination.
+  if (state.status === "not_found" || (state.status !== "valid" && state.status !== "unknown" && !isFresh(state, now()))) {
     state = { ...state, status: "unknown" };
   }
 
@@ -192,10 +194,9 @@ export async function processDomain(args: {
     return true;
   };
 
-  let failedScouts = 0;
   let stuckScouts = 0;
   for (const person of args.people) {
-    if (failedScouts + stuckScouts >= MAX_FAILED_SCOUTS && state.status === "unknown") {
+    if (stuckScouts >= MAX_STUCK_SCOUTS && state.status === "unknown") {
       // Not proven wrong, just unreachable right now: skip without remembering it,
       // so a later upload tries this company again.
       await args.onResult(person.id, parked("server_unreachable", "unverified"));
@@ -209,11 +210,6 @@ export async function processDomain(args: {
       if (!(await moveAway(person, 0))) await args.onResult(person.id, parked("no_mx"));
       continue;
     }
-    if (state.status === "not_found") {
-      if (!(await moveAway(person, 0))) await args.onResult(person.id, parked("domain_parked"));
-      continue;
-    }
-
     const known = state.status === "valid" ? state.pattern : null;
     const r = await findPerson(person, state.domain, known, args.check, {
       fullNameOnly: !!person.movedFrom,
@@ -232,10 +228,9 @@ export async function processDomain(args: {
     } else if (r.reason === "no_mx") {
       await setState({ status: "no_mx", pattern: null });
     } else if (state.status === "unknown" && r.reason !== "bad_input") {
-      // A scout that did not find anything.
-      if (r.status === "unverified") stuckScouts++;
-      else failedScouts++;
-      if (failedScouts >= MAX_FAILED_SCOUTS) await setState({ status: "not_found", pattern: null });
+      // Rejections are per person (left the company, other spelling); only a server that
+      // will not answer stops the rest. A real answer resets the streak.
+      stuckScouts = r.status === "unverified" ? stuckScouts + 1 : 0;
     }
   }
   return state;

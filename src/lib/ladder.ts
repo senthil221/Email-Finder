@@ -1,5 +1,5 @@
 // The live try order: your own finds rank the base patterns once there are
-// enough of them, and scouts stop after the top few (the rest rarely win).
+// enough of them. SCOUT_MAX_PATTERNS can stop people after the top few (default: try all).
 import type { Db } from "./db";
 import { PATTERNS, rankPatterns, type BasePatternId, type Ladder } from "./patterns";
 import { patternFinds } from "./repo";
@@ -18,7 +18,7 @@ function envNum(name: string, fallback: number): number {
 }
 
 export async function loadLadder(db: Db): Promise<LadderInfo> {
-  const cap = envNum("SCOUT_MAX_PATTERNS", 6); // 0 = try all 9
+  const cap = envNum("SCOUT_MAX_PATTERNS", 0); // 0 = try all 9 (most coverage)
   const minFinds = envNum("LADDER_MIN_FINDS", 300);
   const rows = await patternFinds(db, envNum("LADDER_DAYS", 90));
   const finds = rows.filter((r) => PATTERNS.some((p) => p.id === r.pattern)).reduce((s, r) => s + r.n, 0);

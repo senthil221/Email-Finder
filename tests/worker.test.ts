@@ -267,6 +267,6 @@ describe("LinkedIn and the live ladder on a real schema", () => {
     expect(calls.length).toBe(before);
 
     const ladder = await loadLadder(db);
-    expect(ladder).toMatchObject({ source: "default", finds: 2, cap: 6 }); // not enough finds yet to re-rank
+    expect(ladder).toMatchObject({ source: "default", finds: 2, cap: 0 }); // not enough finds yet to re-rank
   });
 });

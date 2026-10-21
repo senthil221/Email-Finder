@@ -7,8 +7,8 @@ Internal tool that finds work emails from **first name + last name + company dom
 3. One person per company goes first (the "scout"):
    - If the scout is found, everyone else at that company starts on the proven pattern, usually 1 check each.
    - Catch-all companies cost 1 check and are set aside.
-   - Dead domains cost 1 check.
-   - After two scouts find nothing, the rest of the company is skipped.
+   - Dead domains (no mail server) cost 0 checks.
+   - Everyone at a live company gets every combination: a miss for one person never skips the others.
 
 Combinations, in try order (`src/lib/patterns.ts`):
 `first@`, `first.last@`, `firstlast@`, `flast@`, `firstl@`, `first.l@`, `first_last@`, `fl@`, `f.last@`

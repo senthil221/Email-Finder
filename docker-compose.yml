@@ -28,7 +28,7 @@ services:
       APP_USER: ${APP_USER:-admin}
       APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD in .env}
       MTN_DAILY_LIMIT: ${MTN_DAILY_LIMIT:-190000}
-      SCOUT_MAX_PATTERNS: ${SCOUT_MAX_PATTERNS:-6}
+      SCOUT_MAX_PATTERNS: ${SCOUT_MAX_PATTERNS:-0}
       LADDER_MIN_FINDS: ${LADDER_MIN_FINDS:-300}
     depends_on:
       db: { condition: service_healthy }
@@ -58,7 +58,7 @@ services:
       MTN_DAILY_LIMIT: ${MTN_DAILY_LIMIT:-190000}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-12}
       RETRY_DELAY_MS: ${RETRY_DELAY_MS:-20000}
-      SCOUT_MAX_PATTERNS: ${SCOUT_MAX_PATTERNS:-6}
+      SCOUT_MAX_PATTERNS: ${SCOUT_MAX_PATTERNS:-0}
       LADDER_MIN_FINDS: ${LADDER_MIN_FINDS:-300}
     depends_on:
       db: { condition: service_healthy }
