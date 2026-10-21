@@ -108,20 +108,41 @@ export function buildLocal(id: PatternId, first: string, last: string): string |
 export type Candidate = { pattern: PatternId; email: string };
 
 /**
- * Candidate emails for a person, in try order. If `preferred` is given
- * (the company's known pattern) it goes first. Duplicates are dropped
- * (e.g. when the last name is missing).
+ * How the base 9 are tried: `order` (from your own finds) and `cap`, the most
+ * base patterns tried per person (0 = all). Preferred patterns are always tried.
+ */
+export type Ladder = { order?: BasePatternId[]; cap?: number };
+
+/** Base patterns ranked by how many people each found; ones with no data keep their default place after. */
+export function rankPatterns(finds: { pattern: string; n: number }[]): BasePatternId[] {
+  const count = new Map(finds.map((f) => [f.pattern, f.n]));
+  const base = PATTERNS.map((p) => p.id);
+  return [...base].sort((a, b) => (count.get(b) ?? 0) - (count.get(a) ?? 0) || base.indexOf(a) - base.indexOf(b));
+}
+
+/**
+ * Candidate emails for a person, in try order: `preferred` patterns first (the
+ * company's proven pattern, then hints about this person), then the base
+ * patterns in ladder order up to the cap, then the multi-word-name extras.
+ * Duplicates are dropped (e.g. when the last name is missing).
  */
 export function candidates(
   first: string,
   last: string,
   domain: string,
-  preferred?: PatternId | null,
+  preferred?: PatternId | (PatternId | null | undefined)[] | null,
+  ladder: Ladder = {},
 ): Candidate[] {
   const name = parseName(first, last);
   if (!name.first || !domain) return [];
-  const pref = preferred ? ALL_PATTERNS.find((p) => p.id === preferred) : undefined;
-  const order = pref ? [pref, ...ALL_PATTERNS.filter((p) => p !== pref)] : ALL_PATTERNS;
+  const prefIds = (Array.isArray(preferred) ? preferred : [preferred]).filter((p): p is PatternId => !!p);
+  const prefs = prefIds.map((id) => ALL_PATTERNS.find((p) => p.id === id)).filter((p) => !!p);
+  const ranked = ladder.order?.length
+    ? [...ladder.order, ...PATTERNS.map((p) => p.id).filter((id) => !ladder.order!.includes(id))]
+        .map((id) => PATTERNS.find((p) => p.id === id)!)
+    : PATTERNS;
+  const base = ladder.cap ? ranked.slice(0, ladder.cap) : ranked;
+  const order = [...prefs, ...base, ...EXTRA_PATTERNS].filter((p, i, all) => all.indexOf(p) === i);
   const seen = new Set<string>();
   const out: Candidate[] = [];
   for (const p of order) {

@@ -48,6 +48,9 @@ alter table domains add column if not exists alt_domain text;
 alter table domains add column if not exists alt_checked_at timestamptz;
 -- Set when a person was restarted on the alternate domain (only ever once).
 alter table job_rows add column if not exists moved_from text;
+-- LinkedIn profile slug: the person's stable ID across uploads (never fetched).
+alter table job_rows add column if not exists linkedin text;
+create index if not exists job_rows_linkedin on job_rows (linkedin, domain) where linkedin is not null;
 
 create table if not exists verifications (
   id bigserial primary key,

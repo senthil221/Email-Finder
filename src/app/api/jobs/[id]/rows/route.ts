@@ -18,6 +18,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/jobs/[id]/rows"
     first: String(r?.first ?? ""),
     last: String(r?.last ?? ""),
     domain: String(r?.domain ?? ""),
+    linkedin: r?.linkedin ? String(r.linkedin) : undefined,
     input: r?.input && typeof r.input === "object" ? (r.input as Record<string, string>) : {},
   }));
   const start = Math.max(1, Number(body.start) || 1);

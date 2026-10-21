@@ -8,7 +8,7 @@ import { toast } from "@/components/Shell";
 import { fmtEta, n } from "@/components/format";
 
 type Parsed = { name: string; headers: string[]; rows: Record<string, string>[] };
-type Mapping = { first: string; last: string; domain: string };
+type Mapping = { first: string; last: string; domain: string; linkedin: string };
 
 const CHUNK = 2000;
 const CHECKS_PER_MIN = 132; // MailTester pace: 22 per 10s
@@ -24,7 +24,8 @@ function guess(headers: string[]): Mapping {
   return {
     first: find(/^first[\s_-]*name$/i, /first/i, /^fname$/i, /given/i),
     last: find(/^last[\s_-]*name$/i, /last/i, /surname/i, /^lname$/i, /family/i),
-    domain: find(/domain/i, /website/i, /^url$/i, /web/i, /site/i, /url/i),
+    domain: find(/domain/i, /website/i, /^url$/i, /web/i, /site/i, /^(?!.*linkedin).*url/i),
+    linkedin: find(/linkedin/i, /^li[s_-]*url$/i, /profile[s_-]*url/i),
   };
 }
 
@@ -43,7 +44,7 @@ export default function UploadPage() {
   const router = useRouter();
   const input = useRef<HTMLInputElement>(null);
   const [parsed, setParsed] = useState<Parsed | null>(null);
-  const [map, setMap] = useState<Mapping>({ first: "", last: "", domain: "" });
+  const [map, setMap] = useState<Mapping>({ first: "", last: "", domain: "", linkedin: "" });
   const [name, setName] = useState("");
   const [over, setOver] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
@@ -100,6 +101,7 @@ export default function UploadPage() {
           first: r[map.first] ?? "",
           last: map.last ? (r[map.last] ?? "") : "",
           domain: r[map.domain] ?? "",
+          linkedin: map.linkedin ? (r[map.linkedin] ?? "") : undefined,
           input: r,
         }));
         const res = await post(`/api/jobs/${id}/rows`, { start: i + 1, rows });
@@ -214,6 +216,7 @@ export default function UploadPage() {
                     ["first", "First name", true],
                     ["last", "Last name", false],
                     ["domain", "Domain / website", true],
+                    ["linkedin", "LinkedIn URL", false],
                   ] as const
                 ).map(([key, label, required]) => (
                   <div key={key} className={`map-card${map[key] ? " ok" : ""}`}>

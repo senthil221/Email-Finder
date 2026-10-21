@@ -5,6 +5,7 @@ import type { Db } from "@/lib/db";
 import { processDomain } from "@/lib/engine";
 import { createChecker, createProviderGate, FatalError, PauseError } from "@/lib/checker";
 import { findAlternateDomain, type DnsDeps } from "@/lib/dns";
+import { loadLadder, type LadderInfo } from "@/lib/ladder";
 import type { MtnClient } from "@/lib/mailtester";
 import * as repo from "@/lib/repo";
 
@@ -13,6 +14,8 @@ export type WorkerOptions = {
   mtn: MtnClient;
   /** Free DNS checks (MX pre-check, alternate domain). Off when not given (tests). */
   dns?: DnsDeps;
+  /** Rank and cap the base patterns from your own finds (refreshed every 30 minutes). Off in tests. */
+  smartLadder?: boolean;
   concurrency?: number;
   // Pace measured by Prospect Sync on the Ultimate plan: 22 starts per 10s,
   // 450ms apart (25 per 10s got HTTP 429 within minutes).
@@ -37,6 +40,20 @@ export function startWorker(o: WorkerOptions) {
   const log = o.log ?? ((m: string) => console.log(`[worker ${new Date().toISOString()}] ${m}`));
   const sleep = o.sleep ?? realSleep;
   const dns = o.dns;
+  let ladder: LadderInfo | undefined;
+  let ladderAt = 0;
+  const currentLadder = async () => {
+    if (o.smartLadder && Date.now() - ladderAt > 30 * 60_000) {
+      ladderAt = Date.now();
+      try {
+        ladder = await loadLadder(db);
+        log(`ladder (${ladder.source}, ${ladder.finds} finds, cap ${ladder.cap || "none"}): ${ladder.order.join(" > ")}`);
+      } catch (e) {
+        log(`ladder refresh failed, keeping the previous one: ${(e as Error).message}`);
+      }
+    }
+    return ladder;
+  };
   const dailyLimit = o.dailyLimit ?? 190_000;
   const gate = createProviderGate({
     max: o.rateMax ?? 22,
@@ -92,6 +109,7 @@ export function startWorker(o: WorkerOptions) {
         state,
         people,
         check: checker,
+        ladder: await currentLadder(),
         onResult: (id, r) => repo.saveResult(db, id, r),
         onDomain: (s) => repo.saveDomain(db, s),
         ...(dns && {

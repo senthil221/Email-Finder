@@ -1,5 +1,6 @@
 // Per-company logic: scout first, reuse the proven pattern, park catch-alls.
-import { candidates, type PatternId } from "./patterns";
+import { fillName, handleHint } from "./linkedin";
+import { candidates, parseName, type Ladder, type PatternId } from "./patterns";
 
 export type DomainStatus = "unknown" | "valid" | "catch_all" | "not_found" | "no_mx";
 
@@ -15,8 +16,18 @@ export type DomainState = {
   altCheckedAt?: Date | null;
 };
 
-/** `movedFrom` is set once a person was restarted on an alternate domain (it only happens once). */
-export type Person = { id: string; first: string; last: string; movedFrom?: string | null };
+/**
+ * `movedFrom` is set once a person was restarted on an alternate domain (it only happens once).
+ * `linkedin` is the profile slug; `knownPattern` is what found this same profile at this domain before.
+ */
+export type Person = {
+  id: string;
+  first: string;
+  last: string;
+  movedFrom?: string | null;
+  linkedin?: string | null;
+  knownPattern?: PatternId | null;
+};
 
 export type PersonStatus = "found" | "catch_all" | "not_found" | "unverified";
 
@@ -67,7 +78,6 @@ const parked = (reason: Reason, status: PersonStatus = "not_found"): PersonResul
   checksUsed: 0,
 });
 
-/** Try one person's combinations one at a time; stop at the first valid. */
 /**
  * Patterns that use both the first and the last name. On an alternate domain
  * (a .in/.com twin can be a different company) only these count: "amit@" at
@@ -75,14 +85,18 @@ const parked = (reason: Reason, status: PersonStatus = "not_found"): PersonResul
  */
 export const FULL_NAME_PATTERNS = new Set<PatternId>(["first.last", "firstlast", "first_last", "flast", "f.last", "first1.last"]);
 
+/** Try one person's combinations one at a time; stop at the first valid. */
 export async function findPerson(
   person: Person,
   domain: string,
   preferred: PatternId | null,
   check: Checker,
-  opts: { fullNameOnly?: boolean } = {},
+  opts: { fullNameOnly?: boolean; ladder?: Ladder } = {},
 ): Promise<PersonResult> {
-  const all = candidates(person.first, person.last, domain, preferred);
+  // The profile URL fixes initial-only or missing names, and a custom handle hints at the style.
+  const name = person.linkedin ? fillName(person.first, person.last, person.linkedin) : person;
+  const hint = person.linkedin ? handleHint(person.linkedin, parseName(name.first, name.last)) : null;
+  const all = candidates(name.first, name.last, domain, [preferred, person.knownPattern, hint], opts.ladder);
   const list = opts.fullNameOnly ? all.filter((c) => FULL_NAME_PATTERNS.has(c.pattern)) : all;
   if (list.length === 0) return parked(all.length ? "all_rejected" : "bad_input"); // no surname to try on the other domain
   let used = 0;
@@ -131,6 +145,8 @@ export async function processDomain(args: {
   findAlternate?: (domain: string) => Promise<string | null>;
   /** Restart a person on another domain: they go back to pending there. */
   onMove?: (personId: string, domain: string, checksUsed: number) => Promise<void>;
+  /** Try order and cap for the base patterns (from your own finds). */
+  ladder?: Ladder;
   now?: () => Date;
 }): Promise<DomainState> {
   const now = args.now ?? (() => new Date());
@@ -199,7 +215,10 @@ export async function processDomain(args: {
     }
 
     const known = state.status === "valid" ? state.pattern : null;
-    const r = await findPerson(person, state.domain, known, args.check, { fullNameOnly: !!person.movedFrom });
+    const r = await findPerson(person, state.domain, known, args.check, {
+      fullNameOnly: !!person.movedFrom,
+      ladder: args.ladder,
+    });
     // Rejected everywhere on a company not proven yet: maybe the wrong domain.
     const wrongDomain =
       r.status === "not_found" && (r.reason === "no_mx" || (r.reason === "all_rejected" && state.status !== "valid"));

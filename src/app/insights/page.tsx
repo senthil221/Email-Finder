@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { BarChart3, CalendarDays, Gauge, Globe, Lightbulb, ListOrdered, MessageSquare, PieChart, Target, Trophy, Users } from "lucide-react";
 import type { Insights, Range } from "@/lib/views";
+import type { LadderInfo } from "@/lib/ladder";
 import { buildLocal, PATTERN_IDS, type PatternId } from "@/lib/patterns";
 import { usePoll } from "@/components/usePoll";
 import { CountUp, PageHead, Seg } from "@/components/ui";
@@ -33,7 +34,7 @@ const VERDICT_COLOR: Record<string, string> = {
 
 export default function InsightsPage() {
   const [range, setRange] = useState<Range>("7d");
-  const { data } = usePoll<Insights>(`/api/insights?range=${range}`, 10000);
+  const { data } = usePoll<Insights & { ladder: LadderInfo }>(`/api/insights?range=${range}`, 10000);
   const d = data?.range === range ? data : null;
   const k = d?.kpi;
 
@@ -163,15 +164,26 @@ export default function InsightsPage() {
           <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div>
               <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                Current order
+                Live order the worker uses{" "}
+                {d?.ladder && (
+                  <span className="faint">
+                    · {d.ladder.source === "data" ? `ranked by your last ${n(d.ladder.finds)} finds` : `default until ${n(d.ladder.minFinds)} finds (${n(d.ladder.finds)} so far)`}
+                    {d.ladder.cap ? ` · scouts stop after ${d.ladder.cap}` : ""}
+                  </span>
+                )}
               </div>
               <div className="order">
-                {CURRENT.map((id, i) => (
-                  <span key={id} style={{ display: "contents" }}>
-                    {i > 0 && <span className="arrow">›</span>}
-                    <span className="tag">{PATTERN_LABEL[id]}</span>
-                  </span>
-                ))}
+                {(d?.ladder?.order ?? CURRENT).map((id, i) => {
+                  const cut = !!d?.ladder?.cap && i >= d.ladder.cap;
+                  return (
+                    <span key={id} style={{ display: "contents" }}>
+                      {i > 0 && <span className="arrow">{d?.ladder?.cap === i ? "|" : "›"}</span>}
+                      <span className="tag" style={cut ? { opacity: 0.4, textDecoration: "line-through" } : undefined} title={cut ? "Only tried when it is the company's proven pattern" : undefined}>
+                        {PATTERN_LABEL[id]}
+                      </span>
+                    </span>
+                  );
+                })}
               </div>
             </div>
             <div>

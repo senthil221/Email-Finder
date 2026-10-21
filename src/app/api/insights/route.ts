@@ -1,5 +1,6 @@
 import { db } from "@/lib/server";
 import { insights, RANGES, type Range } from "@/lib/views";
+import { loadLadder } from "@/lib/ladder";
 
 export const dynamic = "force-dynamic";
 
@@ -7,5 +8,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const r = new URL(req.url).searchParams.get("range") ?? "7d";
   const range = (r in RANGES ? r : "7d") as Range;
-  return Response.json(await insights(await db(), range));
+  const d = await db();
+  const [data, ladder] = await Promise.all([insights(d, range), loadLadder(d)]);
+  return Response.json({ ...data, ladder });
 }

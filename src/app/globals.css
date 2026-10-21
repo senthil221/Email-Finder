@@ -417,7 +417,8 @@ button { font: inherit; color: inherit; }
 @keyframes float { to { transform: translateY(-8px); } }
 .drop h3 { margin: 6px 0 0; font-family: var(--font-display); font-weight: 400; font-size: 30px; letter-spacing: -0.02em; }
 .drop p { margin: 0; color: var(--muted); }
-.map-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.map-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1200px) { .map-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 800px) { .map-grid { grid-template-columns: 1fr; } }
 .map-card { padding: 12px; border-radius: 11px; background: var(--surface-2); box-shadow: 0 0 0 1px var(--line) inset; display: flex; flex-direction: column; gap: 8px; }
 .map-card.ok { box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 40%, transparent) inset; }

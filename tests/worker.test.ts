@@ -236,3 +236,37 @@ describe("schema upgrade", () => {
     ]);
   });
 });
+
+describe("LinkedIn and the live ladder on a real schema", () => {
+  it("stores the profile, reuses a past find for the same profile, ranks the ladder, exports no-email", async () => {
+    const { loadLadder } = await import("@/lib/ladder");
+    const db = await memDb();
+    await repo.migrate(db);
+    const { mtn, calls } = fakeMtn({ catchAll: ["ca.com"], noMx: [], boxes: ["sanjay.kumar@acme.com"] });
+    const run = () =>
+      startWorker({ db, mtn, concurrency: 1, rateMax: 1000, minSpacingMs: 0, idleMs: 5, exitWhenIdle: true, sleep: tick, log: () => {}, smartLadder: true }).done;
+
+    const j1 = await repo.createJob(db, { name: "one" });
+    await repo.addRows(db, j1, 1, [
+      { first: "S.", last: "Kumar", domain: "acme.com", linkedin: "https://www.linkedin.com/in/Sanjay-Kumar-12ab/", input: {} },
+      { first: "Priya", last: "Raman", domain: "ca.com", linkedin: "linkedin.com/in/priya-raman", input: {} },
+    ]);
+    await repo.setJobStatus(db, j1, "running");
+    await run();
+    const [sanjay] = await repo.listRows(db, j1, { status: "found" });
+    expect(sanjay).toMatchObject({ first: "sanjay", email: "sanjay.kumar@acme.com" }); // name filled from the URL
+    expect((await repo.listRows(db, j1, { status: "no_email" })).map((r) => r.first)).toEqual(["priya"]);
+
+    // Same profile in a later upload: tried on its known pattern first, a free cache hit.
+    const before = calls.length;
+    const j2 = await repo.createJob(db, { name: "two" });
+    await repo.addRows(db, j2, 1, [{ first: "Sanjay", last: "K", domain: "acme.com", linkedin: "linkedin.com/in/sanjay-kumar-12ab", input: {} }]);
+    await repo.setJobStatus(db, j2, "running");
+    await run();
+    expect((await repo.listRows(db, j2))[0]).toMatchObject({ status: "found", email: "sanjay.kumar@acme.com", checks_used: 0 });
+    expect(calls.length).toBe(before);
+
+    const ladder = await loadLadder(db);
+    expect(ladder).toMatchObject({ source: "default", finds: 2, cap: 6 }); // not enough finds yet to re-rank
+  });
+});

@@ -1,5 +1,6 @@
 // All SQL lives here. Every function takes the Db so it works with pg and PGlite.
 import type { Db } from "./db";
+import { fillName, normalizeLinkedin } from "./linkedin";
 import type { DomainState, Person, PersonResult } from "./engine";
 import type { CachedVerdict } from "./checker";
 import type { MtnCall } from "./mailtester";
@@ -12,7 +13,7 @@ export async function migrate(db: Db) {
 
 // ---------- jobs ----------
 
-export type RowInput = { first: string; last: string; domain: string; input: Record<string, string> };
+export type RowInput = { first: string; last: string; domain: string; linkedin?: string; input: Record<string, string> };
 
 export async function createJob(
   db: Db,
@@ -40,8 +41,11 @@ export async function addRows(
     const params: unknown[] = [];
     const values: string[] = [];
     chunk.forEach((r, k) => {
-      const first = cleanName(r.first);
-      const last = cleanName(r.last);
+      const linkedin = normalizeLinkedin(r.linkedin);
+      // A missing or initial-only name is filled from the profile URL.
+      const named = linkedin ? fillName(r.first, r.last, linkedin) : r;
+      const first = cleanName(named.first);
+      const last = cleanName(named.last);
       const domain = cleanDomain(r.domain);
       const ok = !!first && !!domain;
       if (!ok) invalid++;
@@ -57,11 +61,12 @@ export async function addRows(
         JSON.stringify(r.input ?? {}),
         ok ? "pending" : "invalid_input",
         ok ? null : "bad_input",
+        linkedin || null,
       );
-      values.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7}::jsonb,$${b + 8},$${b + 9})`);
+      values.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7}::jsonb,$${b + 8},$${b + 9},$${b + 10})`);
     });
     const res = await db.query(
-      `insert into job_rows (job_id, row_no, first, last, domain, dedupe_key, input, status, reason)
+      `insert into job_rows (job_id, row_no, first, last, domain, dedupe_key, input, status, reason, linkedin)
        values ${values.join(",")}
        on conflict (job_id, dedupe_key) do nothing returning id`,
       params,
@@ -153,7 +158,8 @@ export async function listRows(
 ): Promise<JobRow[]> {
   return db.query<JobRow>(
     `select id::text, row_no, first, last, domain, input, status, email, pattern, reason, checks_used
-     from job_rows where job_id = $1 and ($2::text is null or status = $2)
+     from job_rows where job_id = $1
+       and ($2::text is null or status = $2 or ($2 = 'no_email' and status in ('catch_all','not_found','unverified')))
        and ($5::text is null or first || ' ' || last ilike '%' || $5 || '%' or domain ilike '%' || $5 || '%'
             or email ilike '%' || $5 || '%')
      order by row_no limit $3 offset $4`,
@@ -222,7 +228,11 @@ export async function releaseDomain(db: Db, domain: string) {
 
 export async function pendingPeople(db: Db, domain: string, limit = 50): Promise<Person[]> {
   return db.query<Person>(
-    `select r.id::text as id, r.first, r.last, r.moved_from as "movedFrom" from job_rows r join jobs j on j.id = r.job_id
+    `select r.id::text as id, r.first, r.last, r.moved_from as "movedFrom", r.linkedin,
+       -- The same profile was found at this domain before: try that pattern first (usually a free cache hit).
+       (select p.pattern from job_rows p where r.linkedin is not null and p.linkedin = r.linkedin
+          and p.domain = r.domain and p.status = 'found' order by p.updated_at desc limit 1) as "knownPattern"
+     from job_rows r join jobs j on j.id = r.job_id
      where r.domain = $1 and r.status = 'pending' and j.status = 'running'
      order by j.priority desc, r.id limit $2`,
     [domain, limit],
@@ -318,4 +328,14 @@ export async function setWorkerStatus(db: Db, state: string, message: string | n
 export async function getWorkerStatus(db: Db): Promise<WorkerStatus | null> {
   const rows = await db.query<WorkerStatus>(`select state, message, heartbeat_at from worker_status where id = 1`);
   return rows[0] ?? null;
+}
+
+/** People found per base pattern over the last `days` (ranks the ladder). */
+export async function patternFinds(db: Db, days = 90): Promise<{ pattern: string; n: number }[]> {
+  return db.query<{ pattern: string; n: number }>(
+    `select pattern, count(*)::int as n from job_rows
+     where status = 'found' and pattern is not null and updated_at > now() - make_interval(days => $1)
+     group by 1`,
+    [days],
+  );
 }

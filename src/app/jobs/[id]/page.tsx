@@ -106,6 +106,13 @@ export default function JobPage() {
         <a className="btn" href={`/api/jobs/${id}/export`}>
           <Download size={14} /> Export all
         </a>
+        <a
+          className="btn"
+          href={`/api/jobs/${id}/export?status=no_email`}
+          title="Everyone without an email (catch-all, not found, unverified), with your original columns incl. LinkedIn URL"
+        >
+          <Download size={14} /> No-email list ({n(job.catch_all + job.not_found + job.unverified)})
+        </a>
         <a className="btn btn-primary" href={`/api/jobs/${id}/export?status=found`}>
           <Download size={14} /> Export {n(job.found)} found
         </a>

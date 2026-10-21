@@ -11,6 +11,7 @@ const LABEL: Record<string, string> = {
   unverified: "Unverified",
   pending: "Pending",
   invalid_input: "Invalid input",
+  no_email: "No email (for LinkedIn outreach)",
 };
 
 /** CSV of the original columns + results. ?status=found to export one bucket. */
