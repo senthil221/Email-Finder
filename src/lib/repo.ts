@@ -194,7 +194,10 @@ function toState(r: DomainRow): DomainState {
   };
 }
 
-/** Lock the next company that has pending people in a running job. Single lookups go first. */
+/**
+ * Lock the next company that has pending people in a running job. Single lookups go first,
+ * then companies that cost nothing (known no-MX or catch-all), so those numbers fill in early.
+ */
 export async function claimDomain(db: Db, lockSeconds = 600): Promise<DomainState | null> {
   const rows = await db.query<DomainRow>(
     `with c as (
@@ -203,7 +206,9 @@ export async function claimDomain(db: Db, lockSeconds = 600): Promise<DomainStat
        join domains d on d.domain = r.domain
        where r.status = 'pending' and j.status = 'running'
          and (d.locked_until is null or d.locked_until < now())
-       order by j.priority desc, r.id
+       order by j.priority desc,
+         (d.status in ('no_mx', 'catch_all') and d.checked_at > now() - interval '60 days') desc,
+         r.id
        limit 1
        for update of d skip locked
      )
@@ -213,6 +218,37 @@ export async function claimDomain(db: Db, lockSeconds = 600): Promise<DomainStat
     [lockSeconds],
   );
   return rows[0] ? toState(rows[0]) : null;
+}
+
+/**
+ * Companies waiting in a running job whose mail server was not looked up in the
+ * last `days`: the free MX pass checks these ahead of the MailTester queue.
+ */
+export async function domainsNeedingMx(db: Db, skip: string[], limit = 200, days = 7): Promise<string[]> {
+  const rows = await db.query<{ domain: string }>(
+    `select d.domain from domains d
+     where d.status in ('unknown', 'not_found')
+       and (d.mx_checked_at is null or d.mx_checked_at < now() - make_interval(days => $3))
+       and (d.locked_until is null or d.locked_until < now())
+       and not (d.domain = any($1::text[]))
+       and exists (select 1 from job_rows r join jobs j on j.id = r.job_id
+                   where r.domain = d.domain and r.status = 'pending' and j.status = 'running')
+     limit $2`,
+    [skip, limit, days],
+  );
+  return rows.map((r) => r.domain);
+}
+
+/** Save an MX answer from the free pass. Leaves companies alone once the worker has decided them. */
+export async function saveMx(db: Db, domain: string, hasMx: boolean) {
+  await db.query(
+    hasMx
+      ? `update domains set mx_checked_at = now(), updated_at = now()
+         where domain = $1 and status in ('unknown', 'not_found')`
+      : `update domains set status = 'no_mx', pattern = null, checked_at = now(), updated_at = now()
+         where domain = $1 and status in ('unknown', 'not_found') and (locked_until is null or locked_until < now())`,
+    [domain],
+  );
 }
 
 export async function extendLock(db: Db, domain: string, lockSeconds = 600) {

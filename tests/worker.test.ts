@@ -178,6 +178,46 @@ describe("free DNS steps on a real schema", () => {
   });
 });
 
+describe("free MX pass and free-first queue", () => {
+  it("looks up queued companies ahead of time, marks dead ones, and runs free companies first", async () => {
+    const db = await memDb();
+    await repo.migrate(db);
+    const jobId = await repo.createJob(db, { name: "mx" });
+    await repo.addRows(db, jobId, 1, [row("A", "B", "live.in"), row("C", "D", "dead.in"), row("E", "F", "later.in")]);
+    await repo.setJobStatus(db, jobId, "running");
+
+    // Only pending companies in running jobs, minus ones that errored.
+    expect((await repo.domainsNeedingMx(db, ["later.in"])).sort()).toEqual(["dead.in", "live.in"]);
+    await repo.saveMx(db, "live.in", true);
+    await repo.saveMx(db, "dead.in", false);
+    expect(await repo.domainsNeedingMx(db, [])).toEqual(["later.in"]);
+    expect(await repo.getDomain(db, "dead.in")).toMatchObject({ status: "no_mx" });
+    expect((await repo.getDomain(db, "live.in"))?.mxCheckedAt).toBeInstanceOf(Date);
+
+    // The known-dead company is claimed first, even though it was added second.
+    expect((await repo.claimDomain(db))?.domain).toBe("dead.in");
+    await repo.releaseDomain(db, "dead.in");
+
+    // A decided company is never overwritten by the pass.
+    await repo.saveMx(db, "dead.in", true);
+    expect(await repo.getDomain(db, "dead.in")).toMatchObject({ status: "no_mx" });
+
+    // Whole worker with the pass on: dead.in costs nothing, the rest run as usual.
+    const mxAsked: string[] = [];
+    const dns: DnsDeps = {
+      mx: async (d) => (mxAsked.push(d), d === "live.in" || d === "later.in" ? "mx" : "none"),
+      redirect: async () => null,
+    };
+    const { mtn, calls } = fakeMtn({ catchAll: [], noMx: [], boxes: ["a@live.in", "e@later.in"] });
+    await startWorker({ db, mtn, dns, mxPass: true, concurrency: 2, rateMax: 1000, minSpacingMs: 0, idleMs: 5, exitWhenIdle: true, sleep: tick, log: () => {} }).done;
+    const by = Object.fromEntries((await repo.listRows(db, jobId)).map((r) => [r.first, r]));
+    expect(by.a).toMatchObject({ status: "found", email: "a@live.in" });
+    expect(by.c).toMatchObject({ status: "not_found", reason: "no_mx", checks_used: 0 });
+    expect(by.e).toMatchObject({ status: "found", email: "e@later.in" });
+    expect(calls.some((c) => c.endsWith("@dead.in"))).toBe(false);
+  });
+});
+
 describe("live views on a real schema", () => {
   it("ladder, overview, lookups and domains reflect what the worker did", async () => {
     const { lookupDetail, overview, listLookups, listDomains, recentVerifications } = await import("@/lib/views");

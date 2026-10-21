@@ -37,6 +37,7 @@ async function main() {
     }),
     dns: realDns,
     smartLadder: true,
+    mxPass: true,
     concurrency,
     rateMax: num("MTN_RATE_MAX", 22),
     rateWindowMs: num("MTN_RATE_WINDOW_MS", 10_000),

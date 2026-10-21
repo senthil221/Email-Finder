@@ -16,6 +16,9 @@ export type WorkerOptions = {
   dns?: DnsDeps;
   /** Rank and cap the base patterns from your own finds (refreshed every 30 minutes). Off in tests. */
   smartLadder?: boolean;
+  /** Look up every queued company's MX in the background, ahead of the MailTester queue. Needs `dns`. */
+  mxPass?: boolean;
+  mxConcurrency?: number;
   concurrency?: number;
   // Pace measured by Prospect Sync on the Ultimate plan: 22 starts per 10s,
   // 450ms apart (25 per 10s got HTTP 429 within minutes).
@@ -179,8 +182,47 @@ export function startWorker(o: WorkerOptions) {
     repo.setWorkerStatus(db, state, msg).catch(() => {});
   }, 5_000);
 
+  // Free MX pass: dead domains show up on the dashboard within minutes instead of
+  // whenever the queue reaches them. Lookups that error are not retried this run.
+  let slotsDone = false;
+  async function mxPass() {
+    if (!o.mxPass || !dns) return;
+    const failed = new Set<string>();
+    while (!stopping && !slotsDone) {
+      let batch: string[] = [];
+      try {
+        batch = await repo.domainsNeedingMx(db, [...failed]);
+      } catch (e) {
+        log(`MX pass query failed: ${(e as Error).message}`);
+      }
+      if (!batch.length) {
+        await sleep(o.idleMs ? o.idleMs * 5 : 30_000);
+        continue;
+      }
+      let dead = 0;
+      const queue = [...batch];
+      await Promise.all(
+        Array.from({ length: o.mxConcurrency ?? 20 }, async () => {
+          for (let d = queue.shift(); d && !stopping; d = queue.shift()) {
+            const a = await dns.mx(d).catch(() => "error" as const);
+            if (a === "error") failed.add(d);
+            else await repo.saveMx(db, d, a === "mx").catch(() => failed.add(d));
+            if (a === "none") dead++;
+          }
+        }),
+      );
+      log(`MX pass: ${batch.length} companies looked up, ${dead} cannot receive email`);
+    }
+  }
+
   const slots = Array.from({ length: o.concurrency ?? 12 }, () => slot());
-  const done = Promise.all(slots).finally(() => clearInterval(heartbeat));
+  const mx = mxPass();
+  const done = Promise.all(slots)
+    .then(() => {
+      slotsDone = true;
+      return mx;
+    })
+    .finally(() => clearInterval(heartbeat));
 
   return {
     done,
