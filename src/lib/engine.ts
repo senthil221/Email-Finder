@@ -68,14 +68,23 @@ const parked = (reason: Reason, status: PersonStatus = "not_found"): PersonResul
 });
 
 /** Try one person's combinations one at a time; stop at the first valid. */
+/**
+ * Patterns that use both the first and the last name. On an alternate domain
+ * (a .in/.com twin can be a different company) only these count: "amit@" at
+ * someone else's company is likely another Amit, "amit.shah@" almost never is.
+ */
+export const FULL_NAME_PATTERNS = new Set<PatternId>(["first.last", "firstlast", "first_last", "flast", "f.last", "first1.last"]);
+
 export async function findPerson(
   person: Person,
   domain: string,
   preferred: PatternId | null,
   check: Checker,
+  opts: { fullNameOnly?: boolean } = {},
 ): Promise<PersonResult> {
-  const list = candidates(person.first, person.last, domain, preferred);
-  if (list.length === 0) return parked("bad_input");
+  const all = candidates(person.first, person.last, domain, preferred);
+  const list = opts.fullNameOnly ? all.filter((c) => FULL_NAME_PATTERNS.has(c.pattern)) : all;
+  if (list.length === 0) return parked(all.length ? "all_rejected" : "bad_input"); // no surname to try on the other domain
   let used = 0;
   let stuck = 0;
   let rejected = 0;
@@ -190,7 +199,7 @@ export async function processDomain(args: {
     }
 
     const known = state.status === "valid" ? state.pattern : null;
-    const r = await findPerson(person, state.domain, known, args.check);
+    const r = await findPerson(person, state.domain, known, args.check, { fullNameOnly: !!person.movedFrom });
     // Rejected everywhere on a company not proven yet: maybe the wrong domain.
     const wrongDomain =
       r.status === "not_found" && (r.reason === "no_mx" || (r.reason === "all_rejected" && state.status !== "valid"));

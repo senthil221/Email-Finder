@@ -361,3 +361,21 @@ describe("createProviderGate", () => {
     expect(Date.now() - t0).toBeGreaterThanOrEqual(140);
   });
 });
+
+describe("alternate domain safety", () => {
+  it("a person moved to another domain is only found by a full-name pattern", async () => {
+    const { findPerson } = await import("@/lib/engine");
+    const boxes = new Set(["amit@twin.com", "amit.shah@twin.com"]);
+    const tried: string[] = [];
+    const check = async (email: string) => {
+      tried.push(email);
+      return { verdict: boxes.has(email) ? ("valid" as const) : ("invalid" as const), spent: 1 };
+    };
+    const moved = await findPerson({ id: "1", first: "amit", last: "shah", movedFrom: "twin.in" }, "twin.com", null, check, { fullNameOnly: true });
+    expect(moved).toMatchObject({ status: "found", email: "amit.shah@twin.com" });
+    expect(tried).not.toContain("amit@twin.com");
+
+    const noSurname = await findPerson({ id: "2", first: "amit", last: "" }, "twin.com", null, check, { fullNameOnly: true });
+    expect(noSurname).toMatchObject({ status: "not_found", reason: "all_rejected", checksUsed: 0 });
+  });
+});
