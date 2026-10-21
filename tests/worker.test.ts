@@ -197,6 +197,16 @@ describe("free MX pass and free-first queue", () => {
     // The known-dead company is claimed first, even though it was added second.
     expect((await repo.claimDomain(db))?.domain).toBe("dead.in");
     await repo.releaseDomain(db, "dead.in");
+    // Then the rest, oldest row first.
+    expect((await repo.claimNextDomain(db))?.domain).toBe("live.in");
+    await repo.releaseDomain(db, "live.in");
+
+    // A single lookup still jumps the whole queue.
+    const solo = await repo.createJob(db, { name: "solo", kind: "single", priority: 10 });
+    await repo.addRows(db, solo, 1, [row("G", "H", "solo.in")]);
+    await repo.setJobStatus(db, solo, "running");
+    expect((await repo.claimDomain(db))?.domain).toBe("solo.in");
+    await repo.releaseDomain(db, "solo.in");
 
     // A decided company is never overwritten by the pass.
     await repo.saveMx(db, "dead.in", true);

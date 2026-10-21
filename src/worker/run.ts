@@ -101,8 +101,21 @@ export function startWorker(o: WorkerOptions) {
     retryDelayMs: o.retryDelayMs,
   });
 
+  // Once no free company is waiting, stop asking for a while (new ones appear as people get decided).
+  let freeEmptyUntil = 0;
+  const claim = async () => {
+    const lookup = await repo.claimLookupDomain(db);
+    if (lookup) return lookup;
+    if (Date.now() >= freeEmptyUntil) {
+      const free = await repo.claimFreeDomain(db);
+      if (free) return free;
+      freeEmptyUntil = Date.now() + 60_000;
+    }
+    return repo.claimNextDomain(db);
+  };
+
   async function processOne(): Promise<boolean> {
-    const state = await repo.claimDomain(db);
+    const state = await claim();
     if (!state) return false;
     busy++;
     const keepLock = setInterval(() => repo.extendLock(db, state.domain).catch(() => {}), 120_000);

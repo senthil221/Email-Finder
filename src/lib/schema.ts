@@ -29,6 +29,7 @@ create table if not exists job_rows (
 );
 create index if not exists job_rows_job_status on job_rows (job_id, status);
 create index if not exists job_rows_pending on job_rows (domain, id) where status = 'pending';
+create index if not exists job_rows_pending_id on job_rows (id) where status = 'pending';
 create index if not exists job_rows_job_updated on job_rows (job_id, updated_at desc);
 create index if not exists job_rows_updated on job_rows (updated_at);
 

@@ -194,30 +194,72 @@ function toState(r: DomainRow): DomainState {
   };
 }
 
-/**
- * Lock the next company that has pending people in a running job. Single lookups go first,
- * then companies that cost nothing (known no-MX or catch-all), so those numbers fill in early.
- */
-export async function claimDomain(db: Db, lockSeconds = 600): Promise<DomainState | null> {
+/** Lock the first company `pick` selects (a query on `domains d`, without limit). */
+async function lockOne(db: Db, pick: string, lockSeconds: number, params: unknown[] = []): Promise<DomainState | null> {
   const rows = await db.query<DomainRow>(
-    `with c as (
-       select d.domain from job_rows r
-       join jobs j on j.id = r.job_id
-       join domains d on d.domain = r.domain
-       where r.status = 'pending' and j.status = 'running'
-         and (d.locked_until is null or d.locked_until < now())
-       order by j.priority desc,
-         (d.status in ('no_mx', 'catch_all') and d.checked_at > now() - interval '60 days') desc,
-         r.id
-       limit 1
-       for update of d skip locked
-     )
+    `with c as (${pick} limit 1 for update of d skip locked)
      update domains set locked_until = now() + make_interval(secs => $1)
      from c where domains.domain = c.domain
      returning ${DOMAIN_COLS.map((c) => `domains.${c}`).join(", ")}`,
-    [lockSeconds],
+    [lockSeconds, ...params],
   );
   return rows[0] ? toState(rows[0]) : null;
+}
+
+const UNLOCKED = `(d.locked_until is null or d.locked_until < now())`;
+
+/**
+ * Single lookups jump the queue. Asked in two steps: "is any lookup waiting?" is a
+ * sub-millisecond index probe, and a single join makes Postgres scan every pending row.
+ */
+export async function claimLookupDomain(db: Db, lockSeconds = 600): Promise<DomainState | null> {
+  const waiting = await db.query<{ id: string }>(
+    `select j.id from jobs j where j.status = 'running' and j.priority > 0
+       and exists (select 1 from job_rows r where r.job_id = j.id and r.status = 'pending')`,
+  );
+  if (!waiting.length) return null;
+  return lockOne(
+    db,
+    `select d.domain from jobs j
+     join job_rows r on r.job_id = j.id and r.status = 'pending'
+     join domains d on d.domain = r.domain
+     where j.id = any($2::uuid[]) and ${UNLOCKED}
+     order by j.priority desc, r.id`,
+    lockSeconds,
+    [waiting.map((w) => w.id)],
+  );
+}
+
+/** Companies that cost nothing (fresh no-MX or catch-all verdict), so those numbers fill in early. */
+export const claimFreeDomain = (db: Db, lockSeconds = 600) =>
+  lockOne(
+    db,
+    `select d.domain from domains d
+     where d.status in ('no_mx', 'catch_all') and d.checked_at > now() - interval '60 days' and ${UNLOCKED}
+       and exists (select 1 from job_rows r join jobs j on j.id = r.job_id
+                   where r.domain = d.domain and r.status = 'pending' and j.status = 'running')`,
+    lockSeconds,
+  );
+
+/** Everything else, oldest row first (walks the pending-id index, so it stays fast on big lists). */
+export const claimNextDomain = (db: Db, lockSeconds = 600) =>
+  lockOne(
+    db,
+    `select d.domain from job_rows r
+     join jobs j on j.id = r.job_id
+     join domains d on d.domain = r.domain
+     where r.status = 'pending' and j.status = 'running' and ${UNLOCKED}
+     order by r.id`,
+    lockSeconds,
+  );
+
+/** Lock the next company that has pending people in a running job: lookups, then free ones, then the rest. */
+export async function claimDomain(db: Db, lockSeconds = 600): Promise<DomainState | null> {
+  return (
+    (await claimLookupDomain(db, lockSeconds)) ??
+    (await claimFreeDomain(db, lockSeconds)) ??
+    (await claimNextDomain(db, lockSeconds))
+  );
 }
 
 /**
