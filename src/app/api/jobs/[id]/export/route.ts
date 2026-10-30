@@ -34,7 +34,8 @@ export async function GET(req: Request, ctx: RouteContext<"/api/jobs/[id]/export
       data.push([
         ...original.map((c) => String(input?.[c] ?? "")),
         r.email ?? "",
-        LABEL[r.status] ?? r.status,
+        // Confirmed by no2bounce, not MailTester: riskier, so it says so.
+        r.status === "found" && r.reason === "catch_all_verified" ? "Found (catch-all)" : (LABEL[r.status] ?? r.status),
         r.pattern ?? "",
         r.reason ?? "",
         String(r.checks_used),

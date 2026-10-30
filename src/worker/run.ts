@@ -4,9 +4,11 @@
 import type { Db } from "@/lib/db";
 import { processDomain } from "@/lib/engine";
 import { createChecker, createProviderGate, FatalError, PauseError } from "@/lib/checker";
-import { findAlternateDomain, type DnsDeps } from "@/lib/dns";
+import { CaPause, catchAllRound, createCaChecker } from "@/lib/catchall";
+import { findAlternateDomain, mxHost, type DnsDeps } from "@/lib/dns";
 import { loadLadder, type LadderInfo } from "@/lib/ladder";
 import type { MtnClient } from "@/lib/mailtester";
+import { N2bRefused, type N2bClient } from "@/lib/no2bounce";
 import * as repo from "@/lib/repo";
 import { mailDomainFrom, type ScrapeResult } from "@/lib/scrape";
 
@@ -23,6 +25,16 @@ export type WorkerOptions = {
   /** Read each queued company's website for published addresses, ahead of MailTester. */
   scrape?: (domain: string) => Promise<ScrapeResult>;
   scrapeConcurrency?: number;
+  /** Paid second opinion (no2bounce) for catch-all people, within `dailyLimit` credits per 24 hours. */
+  catchAll?: {
+    client: N2bClient;
+    dailyLimit: number;
+    /** Mail providers not worth asking about (Google: 0 of 20 in the test). */
+    skip: string[];
+    combos?: number;
+    concurrency?: number;
+    mxHost?: (domain: string) => Promise<string | null>;
+  };
   concurrency?: number;
   // Pace measured by Prospect Sync on the Ultimate plan: 22 starts per 10s,
   // 450ms apart (25 per 10s got HTTP 429 within minutes).
@@ -286,13 +298,59 @@ export function startWorker(o: WorkerOptions) {
     }
   }
 
+  // Catch-all pass (no2bounce, paid): a second opinion on people MailTester could only
+  // call catch-all. Runs beside the MailTester queue, within its own daily credit budget.
+  const nap = async (ms: number) => {
+    const until = Date.now() + ms;
+    while (!stopping && !slotsDone && Date.now() < until) await sleep(Math.min(5_000, until - Date.now()));
+  };
+  async function catchAllPass() {
+    const ca = o.catchAll;
+    if (!ca) return;
+    const check = createCaChecker({ db, client: ca.client, dailyLimit: ca.dailyLimit, sleep });
+    let keyCheckedAt = 0;
+    while (!stopping && !slotsDone) {
+      try {
+        if (Date.now() - keyCheckedAt > 30 * 60_000) {
+          const credits = await ca.client.credits();
+          keyCheckedAt = Date.now();
+          log(`catch-all pass: ${credits} no2bounce credits left`);
+        }
+        const r = await catchAllRound({
+          db,
+          check,
+          mxHost: ca.mxHost ?? mxHost,
+          skip: ca.skip,
+          combos: ca.combos,
+          concurrency: ca.concurrency,
+        });
+        if (r.checked) log(`catch-all pass: ${r.checked} people checked, ${r.found} found`);
+        // Nothing waiting, or nothing decided (skipped providers, checks still in progress).
+        else await nap(r.people ? 30_000 : 60_000);
+      } catch (e) {
+        if (e instanceof CaPause) {
+          log(`${e.message}; checking again in 10 minutes`);
+          await nap(10 * 60_000);
+        } else if (e instanceof N2bRefused) {
+          log(`${e.message}; retrying in 1 hour`);
+          keyCheckedAt = 0;
+          await nap(60 * 60_000);
+        } else {
+          log(`catch-all pass failed: ${(e as Error).message}`);
+          await nap(60_000);
+        }
+      }
+    }
+  }
+
   const slots = Array.from({ length: o.concurrency ?? 12 }, (_, i) => slot(i % 2 === 0));
   const mx = mxPass();
   const site = scrapePass();
+  const ca = catchAllPass();
   const done = Promise.all(slots)
     .then(() => {
       slotsDone = true;
-      return Promise.all([mx, site]);
+      return Promise.all([mx, site, ca]);
     })
     .finally(() => clearInterval(heartbeat));
 

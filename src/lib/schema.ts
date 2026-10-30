@@ -99,6 +99,28 @@ from (
 where v.id = m.id;
 create index if not exists verifications_created on verifications (created_at);
 
+-- Catch-all pass: no2bounce checks catch-all people a second way. Calls cost money, so
+-- every one is kept (cache, 24-hour credit budget, and resuming checks still in progress).
+alter table domains add column if not exists mx_provider text;         -- google | microsoft | zoho | other
+alter table domains add column if not exists ca_pattern text;          -- the pattern no2bounce confirmed at this catch-all company
+alter table domains add column if not exists ca_accepts_all boolean;   -- no2bounce passed a made-up address here: never trust it at this company
+alter table job_rows add column if not exists ca_checked_at timestamptz;
+create index if not exists job_rows_catch_all_todo on job_rows (domain) where status = 'catch_all' and ca_checked_at is null;
+create table if not exists n2b_checks (
+  id bigserial primary key,
+  email text not null,
+  pattern text,                               -- which combination, or "canary" for the made-up address
+  tracking_id text,
+  result text not null default 'pending',     -- pending | deliverable | undeliverable | catch_all | risky | unknown
+  status text,                                -- no2bounce's own words, e.g. Deliverable/AcceptAll
+  score int,
+  credits int not null default 1,
+  raw jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists n2b_checks_email on n2b_checks (email, id desc);
+create index if not exists n2b_checks_created on n2b_checks (created_at);
+
 create table if not exists worker_status (
   id int primary key default 1,
   state text not null,                        -- running | idle | paused_daily_limit | error

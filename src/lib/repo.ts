@@ -94,6 +94,8 @@ export type JobCounts = {
   found: number;
   /** Of the found, how many the company publishes on its own website (no check needed). */
   found_website: number;
+  /** Of the found, how many no2bounce confirmed at a catch-all company. */
+  found_catch_all: number;
   catch_all: number;
   not_found: number;
   unverified: number;
@@ -106,6 +108,7 @@ const COUNTS_SQL = `
   count(r.id) filter (where r.status = 'pending')::int as pending,
   count(r.id) filter (where r.status = 'found')::int as found,
   count(r.id) filter (where r.status = 'found' and r.reason = 'website')::int as found_website,
+  count(r.id) filter (where r.status = 'found' and r.reason = 'catch_all_verified')::int as found_catch_all,
   count(r.id) filter (where r.status = 'catch_all')::int as catch_all,
   count(r.id) filter (where r.status = 'not_found')::int as not_found,
   count(r.id) filter (where r.status = 'unverified')::int as unverified,
@@ -434,6 +437,95 @@ export async function upgradeFromSite(
   return { found, requeued };
 }
 
+// ---------- catch-all pass (no2bounce) ----------
+
+export type CatchAllPerson = { id: string; first: string; last: string; domain: string; linkedin: string | null };
+
+/**
+ * Catch-all people no2bounce has not looked at yet, newest job first and grouped by
+ * company, skipping companies on `skip` providers and ones where no2bounce says yes to anything.
+ */
+export async function catchAllPeople(db: Db, skip: string[], limit = 200): Promise<CatchAllPerson[]> {
+  return db.query<CatchAllPerson>(
+    `select r.id::text as id, r.first, r.last, r.domain, r.linkedin
+     from job_rows r join jobs j on j.id = r.job_id join domains d on d.domain = r.domain
+     where r.status = 'catch_all' and r.ca_checked_at is null and j.status <> 'cancelled'
+       and d.ca_accepts_all is not true
+       and (d.mx_provider is null or not (d.mx_provider = any($1::text[])))
+     order by j.created_at desc, r.domain, r.id limit $2`,
+    [skip, limit],
+  );
+}
+
+export type CatchAllCompany = { domain: string; mx_provider: string | null; ca_pattern: string | null; ca_accepts_all: boolean | null };
+
+export async function catchAllCompanies(db: Db, domains: string[]): Promise<CatchAllCompany[]> {
+  return db.query<CatchAllCompany>(
+    `select domain, mx_provider, ca_pattern, ca_accepts_all from domains where domain = any($1::text[])`,
+    [domains],
+  );
+}
+
+export async function saveMxProvider(db: Db, domain: string, provider: string) {
+  await db.query(`update domains set mx_provider = $2 where domain = $1`, [domain, provider]);
+}
+
+export async function saveCatchAllCompany(db: Db, domain: string, patch: { pattern?: string; acceptsAll?: boolean }) {
+  await db.query(
+    `update domains set ca_pattern = coalesce($2, ca_pattern), ca_accepts_all = coalesce($3, ca_accepts_all), updated_at = now()
+     where domain = $1`,
+    [domain, patch.pattern ?? null, patch.acceptsAll ?? null],
+  );
+}
+
+/** A hit becomes found (reason "catch_all_verified"); a miss stays catch-all, just marked as looked at. */
+export async function saveCatchAllResult(db: Db, rowId: string, hit: { email: string; pattern: string } | null) {
+  await db.query(
+    hit
+      ? `update job_rows set status = 'found', email = $2, pattern = $3, reason = 'catch_all_verified',
+           ca_checked_at = now(), updated_at = now()
+         where id = $1 and status = 'catch_all'` // the website pass may have found them meanwhile
+      : `update job_rows set ca_checked_at = now() where id = $1`,
+    hit ? [rowId, hit.email, hit.pattern] : [rowId],
+  );
+}
+
+export type N2bCheckRow = { id: string; result: string; tracking_id: string | null; created_at: string | Date };
+
+/** The latest no2bounce check of an address within `days` (finished, or still in progress). */
+export async function latestN2bCheck(db: Db, email: string, days = 90): Promise<N2bCheckRow | null> {
+  const rows = await db.query<N2bCheckRow>(
+    `select id::text, result, tracking_id, created_at from n2b_checks
+     where email = $1 and created_at > now() - make_interval(days => $2) order by id desc limit 1`,
+    [email, days],
+  );
+  return rows[0] ?? null;
+}
+
+/** Logged before waiting for the answer, so a restart polls it instead of paying again. */
+export async function startN2bCheck(db: Db, email: string, pattern: string, trackingId: string): Promise<string> {
+  const [r] = await db.query<{ id: string }>(
+    `insert into n2b_checks (email, pattern, tracking_id) values ($1, $2, $3) returning id::text`,
+    [email, pattern, trackingId],
+  );
+  return r.id;
+}
+
+export async function finishN2bCheck(db: Db, id: string, a: { result: string; status: string; score: number | null; credits: number; raw: unknown }) {
+  await db.query(
+    `update n2b_checks set result = $2, status = $3, score = $4, credits = $5, raw = $6::jsonb where id = $1`,
+    [id, a.result, a.status, a.score, a.credits, JSON.stringify(a.raw ?? null)],
+  );
+}
+
+/** no2bounce credits spent in the last 24 hours (checks still in progress count as 1). */
+export async function n2bCredits24h(db: Db): Promise<number> {
+  const [r] = await db.query<{ n: number }>(
+    `select coalesce(sum(credits), 0)::int as n from n2b_checks where created_at > now() - interval '24 hours'`,
+  );
+  return r.n;
+}
+
 /** Known dead within `days` (no MX): not worth moving people to. */
 export async function isDeadDomain(db: Db, domain: string, days = 60): Promise<boolean> {
   const rows = await db.query(
@@ -503,6 +595,7 @@ export async function patternFinds(db: Db, days = 90): Promise<{ pattern: string
   return db.query<{ pattern: string; n: number }>(
     `select pattern, count(*)::int as n from job_rows
      where status = 'found' and pattern is not null and updated_at > now() - make_interval(days => $1)
+       and reason is distinct from 'catch_all_verified' -- only the top few are tried there, so they would skew the order
      group by 1`,
     [days],
   );

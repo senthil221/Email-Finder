@@ -35,6 +35,7 @@ export const REASON_LABEL: Record<string, string> = {
   server_unreachable: "Skipped: mail server kept timing out",
   bad_input: "Missing first name or domain",
   website: "Found on the company website",
+  catch_all_verified: "Catch-all company: confirmed by no2bounce",
 };
 
 export const PATTERN_LABEL: Record<string, string> = {

@@ -62,6 +62,11 @@ services:
       LADDER_MIN_FINDS: ${LADDER_MIN_FINDS:-300}
       WEBSITE_PASS: ${WEBSITE_PASS:-on}
       NO2BOUNCE_API_KEY: ${NO2BOUNCE_API_KEY:-}
+      NO2BOUNCE_PASS: ${NO2BOUNCE_PASS:-on}
+      NO2BOUNCE_DAILY_LIMIT: ${NO2BOUNCE_DAILY_LIMIT:-3000}
+      NO2BOUNCE_SKIP: ${NO2BOUNCE_SKIP:-google}
+      NO2BOUNCE_COMBOS: ${NO2BOUNCE_COMBOS:-4}
+      NO2BOUNCE_CONCURRENCY: ${NO2BOUNCE_CONCURRENCY:-5}
     depends_on:
       db: { condition: service_healthy }
       web: { condition: service_started }

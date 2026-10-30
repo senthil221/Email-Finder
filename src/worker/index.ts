@@ -3,6 +3,7 @@ import { pgDb } from "@/lib/db";
 import { realDns } from "@/lib/dns";
 import { scrapeSite } from "@/lib/scrape";
 import { createMtnClient } from "@/lib/mailtester";
+import { createN2bClient } from "@/lib/no2bounce";
 import { migrate, setWorkerStatus } from "@/lib/repo";
 import { startWorker } from "./run";
 
@@ -14,6 +15,7 @@ function num(name: string, fallback: number): number {
 async function main() {
   const url = process.env.DATABASE_URL;
   const key = process.env.MTN_API_KEY;
+  const n2bKey = process.env.NO2BOUNCE_API_KEY?.trim();
   if (!url) throw new Error("DATABASE_URL is not set");
 
   const concurrency = num("WORKER_CONCURRENCY", 12);
@@ -40,6 +42,17 @@ async function main() {
     smartLadder: true,
     mxPass: true,
     scrape: process.env.WEBSITE_PASS === "off" ? undefined : (d: string) => scrapeSite(d),
+    // Catch-all pass: on whenever a no2bounce key is set (NO2BOUNCE_PASS=off to pause it).
+    catchAll:
+      n2bKey && process.env.NO2BOUNCE_PASS !== "off"
+        ? {
+            client: createN2bClient({ apiKey: n2bKey }),
+            dailyLimit: num("NO2BOUNCE_DAILY_LIMIT", 3_000),
+            skip: (process.env.NO2BOUNCE_SKIP ?? "google").split(",").map((s) => s.trim()).filter(Boolean),
+            combos: num("NO2BOUNCE_COMBOS", 4),
+            concurrency: num("NO2BOUNCE_CONCURRENCY", 5),
+          }
+        : undefined,
     concurrency,
     rateMax: num("MTN_RATE_MAX", 22),
     rateWindowMs: num("MTN_RATE_WINDOW_MS", 10_000),

@@ -45,6 +45,29 @@ export async function followRedirect(domain: string, timeoutMs = 8_000): Promise
 
 export const realDns: DnsDeps = { mx: lookupMx, redirect: followRedirect };
 
+/** The domain's main mail server (lowest MX preference), or null if there is none or DNS failed. */
+export async function mxHost(domain: string): Promise<string | null> {
+  try {
+    const records = (await resolver.resolveMx(domain)).filter((r) => r.exchange && r.exchange !== ".");
+    records.sort((a, b) => a.priority - b.priority);
+    return records[0]?.exchange.toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** "none" is stored when a domain has no mail server any more. */
+export type MailProvider = "google" | "microsoft" | "zoho" | "other";
+
+/** Who runs a company's mail, from its MX host ("acme-com.mail.protection.outlook.com" -> microsoft). */
+export function mailProvider(host: string | null): MailProvider {
+  const h = (host ?? "").toLowerCase().replace(/\.$/, "");
+  if (/(^|\.)(google|googlemail)\.com$/.test(h)) return "google";
+  if (/(^|\.)outlook\.com$|(^|\.)microsoft\.com$/.test(h)) return "microsoft";
+  if (/(^|\.)zoho(mail)?\.[a-z.]+$/.test(h)) return "zoho";
+  return "other";
+}
+
 // Redirects to these are a parked-domain sale page or a social profile, not the company's mail domain.
 const NOT_A_COMPANY = [
   "sedo.com", "sedoparking.com", "dan.com", "afternic.com", "hugedomains.com", "godaddy.com", "bodis.com",
