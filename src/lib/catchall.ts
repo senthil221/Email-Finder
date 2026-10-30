@@ -22,6 +22,9 @@ export class CaPending extends Error {}
 
 export type CaCheck = (email: string, pattern: string) => Promise<N2bResult>;
 
+/** "request": people asked for from a list. "auto": the background pass over everyone else. */
+export type CaSource = "auto" | "request";
+
 /** Made-up but stable per company, so asking again reuses the earlier answer. */
 export const canaryFor = (domain: string) =>
   `zq${createHash("sha256").update(`canary:${domain}`).digest("hex").slice(0, 10)}@${domain}`;
@@ -90,11 +93,14 @@ export async function verifyCatchAllCompany(args: {
 export function createCaChecker(d: {
   db: Db;
   client: N2bClient;
+  /** Credits per rolling 24 hours for this source. */
   dailyLimit: number;
+  source?: CaSource;
   sleep?: (ms: number) => Promise<void>;
   /** Polls while waiting for one answer (3s apart, then 15s), before giving up for now. */
   maxPolls?: number;
 }): CaCheck {
+  const source = d.source ?? "auto";
   const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const maxPolls = d.maxPolls ?? 55; // about 10 minutes
   let used = 0;
@@ -109,13 +115,13 @@ export function createCaChecker(d: {
       trackingId = last.tracking_id;
     } else {
       if (Date.now() - syncedAt > 60_000) {
-        used = await repo.n2bCredits24h(d.db);
+        used = await repo.n2bCredits24h(d.db, source);
         syncedAt = Date.now();
       }
-      if (used >= d.dailyLimit) throw new CaPause(`no2bounce daily limit of ${d.dailyLimit} credits reached`);
+      if (used >= d.dailyLimit) throw new CaPause(`no2bounce ${source} limit of ${d.dailyLimit} credits a day reached`);
       trackingId = await d.client.submit(email);
       used++;
-      id = await repo.startN2bCheck(d.db, email, pattern, trackingId);
+      id = await repo.startN2bCheck(d.db, email, pattern, trackingId, source);
     }
     for (let i = 0; i < maxPolls; i++) {
       await sleep(i < 20 ? 3_000 : 15_000);
@@ -136,19 +142,25 @@ export function createCaChecker(d: {
  * One round of the pass: the next batch of unchecked catch-all people, their companies'
  * mail providers looked up (free DNS), skipped providers dropped, then companies in
  * parallel. Errors from one company (pause, refusal) stop the round; the people not
- * decided yet are picked up again next round.
+ * decided yet are picked up again next round. People asked for from a list
+ * (source "request") are checked whatever their provider.
  */
 export async function catchAllRound(d: {
   db: Db;
   check: CaCheck;
   mxHost: (domain: string) => Promise<string | null>;
   skip: string[];
+  source?: CaSource;
   combos?: number;
   concurrency?: number;
   batchSize?: number;
 }): Promise<{ people: number; checked: number; found: number }> {
-  const skip = [...d.skip, "none"]; // "none": no mail server any more, nothing to ask about
-  const batch = await repo.catchAllPeople(d.db, skip, d.batchSize ?? 200);
+  const asked = d.source === "request";
+  // "none": no mail server any more, nothing to ask about.
+  const skip = asked ? ["none"] : [...d.skip, "none"];
+  const batch = asked
+    ? await repo.requestedCatchAllPeople(d.db, d.batchSize ?? 200)
+    : await repo.catchAllPeople(d.db, skip, d.batchSize ?? 200);
   if (!batch.length) return { people: 0, checked: 0, found: 0 };
   const byDomain = new Map<string, repo.CatchAllPerson[]>();
   for (const p of batch) byDomain.set(p.domain, [...(byDomain.get(p.domain) ?? []), p]);
@@ -162,7 +174,11 @@ export async function catchAllRound(d: {
       provider = host ? mailProvider(host) : "none";
       await repo.saveMxProvider(d.db, c.domain, provider);
     }
-    if (skip.includes(provider)) continue; // next round's query leaves them out
+    if (skip.includes(provider)) {
+      // Asked for: answered (nothing to check). Otherwise next round's query leaves them out.
+      if (asked) for (const p of byDomain.get(c.domain) ?? []) await repo.saveCatchAllResult(d.db, p.id, null);
+      continue;
+    }
     queue.push({ domain: c.domain, pattern: isPatternId(c.ca_pattern) ? c.ca_pattern : null, acceptsAll: !!c.ca_accepts_all });
   }
 

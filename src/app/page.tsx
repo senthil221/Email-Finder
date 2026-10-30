@@ -1,210 +1,195 @@
 "use client";
 import Link from "next/link";
-import { Activity, ArrowUpRight, Asterisk, AtSign, Gauge, Layers, Radio, Sparkles, Target, UploadCloud } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Search, Upload } from "lucide-react";
 import type { JobSummary } from "@/lib/repo";
 import type { Overview } from "@/lib/views";
 import { usePoll } from "@/components/usePoll";
-import { CountUp, Bar, Chip, PageHead, Ring, StackBar } from "@/components/ui";
-import { Spark, ThroughputChart } from "@/components/charts";
-import { LiveFeed } from "@/components/live";
-import { jobState, n, PATTERN_LABEL } from "@/components/format";
+import { PageHead, Progress, Skeleton, Stat, Status } from "@/components/ui";
+import { compact, fmtDate, jobState, n, PATTERN_LABEL, pct } from "@/components/format";
 
-type Stats = Overview & { jobs: JobSummary[]; online: boolean; dailyLimit: number; now: number; worker: { state: string } | null };
+type Stats = Overview & { jobs: JobSummary[]; dailyLimit: number };
 
-export default function Dashboard() {
-  const { data } = usePoll<Stats>("/api/stats", 3000);
-  const s = data;
-  const hit = s && s.decided24h ? (s.found24h / s.decided24h) * 100 : 0;
-  const perFind = s && s.found24h ? s.checks24h / s.found24h : 0;
-  const quota = s ? (s.checks24h / s.dailyLimit) * 100 : 0;
-  const series = s?.series ?? [];
-  const sparkChecks = series.slice(-20).map((p) => p.checks);
-  const sparkFound = series.slice(-20).map((p) => p.valid);
-  const active = (s?.jobs ?? []).filter((j) => jobState(j) === "running");
-  const patMax = Math.max(1, ...(s?.patterns ?? []).map((p) => p.n));
-  const allDone = s ? s.totals.found + s.totals.catch_all + s.totals.not_found + s.totals.unverified : 0;
+export default function OverviewPage() {
+  const router = useRouter();
+  const { data: d } = usePoll<Stats>("/api/stats", 10_000);
+  const decided = d ? d.people - d.pending : 0;
+  const fromMtn = d ? d.found - d.found_website - d.found_catch_all : 0;
+  const caTried = d ? d.found_catch_all + d.ca_checked : 0;
 
   return (
     <div className="page">
-      <PageHead
-        eyebrow={
-          <>
-            <span className={`live-dot ${s?.online ? "" : "off"}`} /> {s?.online ? "Signal room · live" : "Signal room · worker offline"}
-          </>
-        }
-        title={
-          <>
-            Every inbox, <i>found.</i>
-          </>
-        }
-        sub="Nine name combinations per person, verified one by one with MailTester Ninja. One scout per company proves the pattern; everyone after costs a single check."
-      >
-        <Link href="/upload" className="btn">
-          <UploadCloud size={15} /> Bulk upload
+      <PageHead title="Overview" sub="Where your lists stand, across every upload.">
+        <Link href="/find" className="btn">
+          <Search size={16} /> Find one email
         </Link>
-        <Link href="/find" className="btn btn-primary">
-          <Sparkles size={15} /> Find an email
+        <Link href="/upload" className="btn btn-primary">
+          <Upload size={16} /> Upload a list
         </Link>
       </PageHead>
 
-      <section className="grid g-kpi">
-        <Kpi i={1} icon={AtSign} label="Emails found · 24h" tone="var(--ok)" value={s?.found24h} spark={sparkFound} sparkColor="var(--ok)" foot={s && `${n(s.totals.found)} all time`} />
-        <Kpi i={2} icon={Target} label="Hit rate · 24h" value={hit} decimals={1} unit="%" foot={s && `${n(s.decided24h)} people decided`} />
-        <Kpi i={3} icon={Activity} label="Checks · 24h" tone="var(--accent)" value={s?.checks24h} spark={sparkChecks} foot={s && `${quota.toFixed(1)}% of ${n(s.dailyLimit)}`} />
-        <Kpi i={4} icon={Gauge} label="Checks per find" value={perFind} decimals={1} foot="lower is better" />
-        <Kpi i={5} icon={Asterisk} label="Catch-all domains" tone="var(--warn)" value={s?.catchAllDomains} foot={s && `${n(s.provenDomains)} domains with a proven pattern`} />
+      <section className="stats" aria-label="Results so far">
+        <Stat label="Emails found" tone="found" value={d?.found} sub={d && `${pct(d.found, decided)} of the ${n(decided)} people checked`} />
+        <Stat label="Catch-all" tone="catch_all" value={d?.catch_all} sub="The company accepts any address, so MailTester can't confirm" />
+        <Stat
+          label="Not found"
+          tone="not_found"
+          value={d?.not_found}
+          sub={d && (d.unverified ? `and ${n(d.unverified)} that couldn't be verified` : "Every combination was rejected")}
+        />
+        <Stat label="Waiting" tone="pending" value={d?.pending} sub="In lists that are running" />
       </section>
 
-      <section className="grid g-main">
-        <div className="panel rise" style={{ ["--i" as string]: 6 }}>
-          <div className="panel-head">
-            <h2 className="panel-title">
-              <Radio size={15} /> Throughput
-            </h2>
-            <span className="panel-sub">last 60 minutes · updates every 3s</span>
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-head">
+            <h2>Where found emails come from</h2>
           </div>
-          <div className="panel-body">
-            {s ? <ThroughputChart series={series} now={s.now} /> : <div className="skel" style={{ height: 230 }} />}
-          </div>
-        </div>
-        <div className="panel rise" style={{ ["--i" as string]: 7 }}>
-          <div className="panel-head">
-            <h2 className="panel-title">
-              <span className="live-dot" /> Live checks
-            </h2>
-            <span className="panel-sub">every MailTester call</span>
-          </div>
-          <LiveFeed limit={24} maxHeight={300} />
-        </div>
-      </section>
-
-      <section className="grid g-main">
-        <div className="panel rise" style={{ ["--i" as string]: 8 }}>
-          <div className="panel-head">
-            <h2 className="panel-title">
-              <Layers size={15} /> Jobs in flight
-            </h2>
-            <div className="panel-tools">
-              <Link href="/jobs" className="btn btn-ghost btn-sm">
-                All history <ArrowUpRight size={13} />
-              </Link>
-            </div>
-          </div>
-          <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {(active.length ? active : (s?.jobs ?? []).slice(0, 4)).map((j) => {
-              const pct = j.total ? ((j.total - j.pending) / j.total) * 100 : 0;
-              const st = jobState(j);
-              return (
-                <Link key={j.id} href={`/jobs/${j.id}`} className="job-card">
-                  <span className="jc-name">{j.name}</span>
-                  <Chip status={st} />
-                  <Bar pct={pct} live={st === "running"} done={st === "done"} />
-                  <div className="jc-meta">
-                    <span>
-                      <b>{Math.round(pct)}%</b> done
-                    </span>
-                    <span>
-                      <b>{n(j.found)}</b> found
-                    </span>
-                    <span>
-                      <b>{n(j.catch_all)}</b> catch-all
-                    </span>
-                    <span>
-                      <b>{n(j.total)}</b> people
-                    </span>
-                  </div>
-                </Link>
-              );
-            })}
-            {s && s.jobs.length === 0 && (
-              <div className="empty">
-                <UploadCloud size={22} />
-                No uploads yet.
-                <Link href="/upload" className="btn btn-primary btn-sm">
-                  Upload your first CSV
-                </Link>
+          <div className="card-body">
+            {d ? (
+              <div className="bars">
+                <Bar label="Verified by MailTester" v={fromMtn} of={d.found} tone="found" />
+                <Bar label="On the company website" v={d.found_website} of={d.found} tone="found" />
+                <Bar label="no2bounce, at catch-alls" v={d.found_catch_all} of={d.found} tone="catch_all" />
               </div>
+            ) : (
+              <Skeleton rows={3} />
             )}
           </div>
         </div>
-
-        <div className="panel rise" style={{ ["--i" as string]: 9 }}>
-          <div className="panel-head">
-            <h2 className="panel-title">
-              <Target size={15} /> Results, all time
-            </h2>
+        <div className="card">
+          <div className="card-head">
+            <h2>Patterns behind the most finds</h2>
           </div>
-          <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            <div className="row" style={{ gap: 18 }}>
-              <Ring pct={allDone ? (s!.totals.found / allDone) * 100 : 0} size={104} stroke={9} done>
-                <b>{allDone ? Math.round((s!.totals.found / allDone) * 100) : 0}%</b>
-                <span>found</span>
-              </Ring>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <StackBar counts={s?.totals ?? {}} total={allDone + (s?.totals.pending ?? 0)} />
-              </div>
-            </div>
-            <div className="divider" />
-            <div>
-              <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
-                Patterns learned (domains proven per pattern)
-              </div>
-              <div className="hbars">
-                {(s?.patterns ?? []).length === 0 && <span className="faint">Patterns appear here as companies get proven.</span>}
-                {(s?.patterns ?? []).map((p) => (
-                  <div key={p.pattern} className="hbar">
-                    <span className="mono" style={{ fontSize: 11.5 }}>
-                      {PATTERN_LABEL[p.pattern] ?? p.pattern}
-                    </span>
-                    <span className="track">
-                      <i style={{ width: `${(p.n / patMax) * 100}%` }} />
-                    </span>
-                    <span className="v">{n(p.n)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+          <div className="card-body">
+            {d ? (
+              d.patterns.length ? (
+                <div className="bars">
+                  {d.patterns.map((p) => (
+                    <Bar key={p.pattern} label={PATTERN_LABEL[p.pattern] ?? p.pattern} v={p.n} of={d.found} />
+                  ))}
+                </div>
+              ) : (
+                <p className="muted">Nothing found yet.</p>
+              )
+            ) : (
+              <Skeleton rows={5} />
+            )}
           </div>
         </div>
+      </section>
+
+      <section className="grid-2">
+        <div className="card">
+          <div className="card-head">
+            <h2>Last 24 hours</h2>
+          </div>
+          <div className="card-body figs">
+            <Fig k="Emails found" v={d && n(d.found24h)} />
+            <Fig k="MailTester checks" v={d && `${compact(d.checks24h)} / ${compact(d.dailyLimit)}`} />
+            <Fig k="no2bounce credits used" v={d && n(d.n2b24h.auto + d.n2b24h.request)} />
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-head">
+            <h2>Catch-all checks with no2bounce</h2>
+          </div>
+          <div className="card-body figs">
+            <Fig k="People checked" v={d && n(caTried)} />
+            <Fig k="Confirmed" v={d && (caTried ? `${n(d.found_catch_all)} (${pct(d.found_catch_all, caTried)})` : "0")} />
+            <Fig k="Credits left" v={d && (d.n2bCredits == null ? "—" : n(d.n2bCredits))} />
+            <p className="muted" style={{ gridColumn: "1 / -1", fontSize: 13 }}>
+              Runs on its own in the background (Google mail is skipped: it never confirms). To check people now, open a list and use its Catch-all tab.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Recent lists</h2>
+          <div className="tools">
+            <Link href="/jobs" className="btn btn-sm">
+              All lists
+            </Link>
+          </div>
+        </div>
+        {d && d.jobs.length === 0 && (
+          <div className="empty">
+            No lists yet. <Link href="/upload" style={{ color: "var(--brand-ink)" }}>Upload one</Link> to get started.
+          </div>
+        )}
+        {d && d.jobs.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>List</th>
+                  <th>Status</th>
+                  <th style={{ width: 160 }}>Progress</th>
+                  <th className="r">People</th>
+                  <th className="r">Found</th>
+                  <th>Uploaded</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.jobs.map((j) => {
+                  const st = jobState(j);
+                  return (
+                    <tr key={j.id} className="is-link" onClick={() => router.push(`/jobs/${j.id}`)}>
+                      <td style={{ fontWeight: 500 }}>
+                        <Link href={`/jobs/${j.id}`} onClick={(e) => e.stopPropagation()}>
+                          {j.name}
+                        </Link>
+                      </td>
+                      <td>
+                        <Status status={st} />
+                      </td>
+                      <td>
+                        <Progress pct={j.total ? ((j.total - j.pending) / j.total) * 100 : 0} done={st === "done"} />
+                      </td>
+                      <td className="r num">{n(j.total)}</td>
+                      <td className="r num">
+                        {n(j.found)} <span className="faint">{pct(j.found, j.total - j.pending - j.invalid_input)}</span>
+                      </td>
+                      <td className="muted">{fmtDate(j.created_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {!d && <Skeleton />}
       </section>
     </div>
   );
 }
 
-function Kpi({
-  i,
-  icon: Icon,
-  label,
-  value,
-  decimals = 0,
-  unit,
-  foot,
-  tone,
-  spark,
-  sparkColor,
-}: {
-  i: number;
-  icon: typeof Activity;
-  label: string;
-  value?: number;
-  decimals?: number;
-  unit?: string;
-  foot?: React.ReactNode;
-  tone?: string;
-  spark?: number[];
-  sparkColor?: string;
-}) {
+function Bar({ label, v, of, tone }: { label: string; v: number; of: number; tone?: string }) {
+  const w = of ? (v / of) * 100 : 0;
   return (
-    <div className="kpi rise" style={{ ["--i" as string]: i, ["--kpi-tone" as string]: tone ?? "transparent" }}>
-      <div className="kpi-label">
-        <Icon size={14} strokeWidth={1.7} /> {label}
+    <div className="b">
+      <span>{label}</span>
+      <span className="t" aria-hidden="true">
+        <i className={tone} style={{ width: `${w}%` }} />
+      </span>
+      <span className="val">
+        {n(v)} <span className="faint">{pct(v, of)}</span>
+      </span>
+    </div>
+  );
+}
+
+function Fig({ k, v }: { k: string; v: string | null | undefined | false }) {
+  return (
+    <div>
+      <div className="muted" style={{ fontSize: 13 }}>
+        {k}
       </div>
-      <div className="kpi-value">
-        {value === undefined ? <span className="skel" style={{ display: "inline-block", width: 70, height: 26 }} /> : <CountUp value={value} decimals={decimals} />}
-        {unit && value !== undefined && <small>{unit}</small>}
+      <div className="num" style={{ fontSize: 20, fontWeight: 600, marginTop: 2 }}>
+        {v || <span className="skel" style={{ display: "inline-block", width: 60, height: 22 }} />}
       </div>
-      <div className="kpi-foot">{foot}</div>
-      {spark && spark.some((v) => v > 0) && <Spark values={spark} color={sparkColor} />}
     </div>
   );
 }

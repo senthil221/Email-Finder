@@ -167,6 +167,32 @@ describe("catch-all pass on a real schema", () => {
     expect(submitted).toHaveLength(3);
   });
 
+  it("checks people asked for from a list first, Google included, on their own budget", async () => {
+    const { db, job, mxHost } = await setup();
+    const ids = Object.fromEntries((await repo.listRows(db, job)).map((x) => [x.first, x.id]));
+    expect(await repo.requestCatchAll(db, job, [ids.hema, ids.old, ids.live])).toBe(2); // live.com is not catch-all
+    expect(await repo.getJob(db, job)).toMatchObject({ ca_queued: 2, ca_checked: 0 });
+
+    // The background pass leaves them to the request loop.
+    const { client, submitted } = fakeN2b({ boxes: ["hema.natesan@moppet.com"] });
+    const auto = createCaChecker({ db, client, dailyLimit: 100, sleep: tick });
+    await catchAllRound({ db, check: auto, mxHost, skip: ["google"] });
+    expect(submitted.some((e) => e.endsWith("@moppet.com"))).toBe(false);
+
+    const asked = createCaChecker({ db, client, dailyLimit: 100, source: "request", sleep: tick });
+    expect(await catchAllRound({ db, check: asked, mxHost, skip: ["google"], source: "request" })).toMatchObject({ people: 2, found: 1 });
+    const by = Object.fromEntries((await repo.listRows(db, job)).map((x) => [x.first, x]));
+    expect(by.hema).toMatchObject({ status: "found", email: "hema.natesan@moppet.com", reason: "catch_all_verified", mx_provider: "google" });
+    expect(by.old).toMatchObject({ status: "catch_all", ca: "checked", mx_provider: "none" }); // no mail server: nothing to pay for
+    // satpal and pradeep: the background pass found nothing for them; old: nothing to check.
+    expect(await repo.getJob(db, job)).toMatchObject({ ca_queued: 0, ca_checked: 3, found_catch_all: 1 });
+    expect(await repo.n2bCredits24h(db, "request")).toBe(2); // hema's first try, then the made-up address
+    expect(await repo.n2bCredits24h(db, "auto")).toBe(8); // 4 combinations each for satpal and pradeep
+
+    // Asking again about people already checked queues nobody.
+    expect(await repo.requestCatchAll(db, job, null)).toBe(0);
+  });
+
   it("polls a check still in progress instead of paying again, and stops at the daily budget", async () => {
     const { db, mxHost } = await setup();
     const slow = fakeN2b({ boxes: ["satpal.singh@boilers.com"], slow: ["satpal.singh@boilers.com"] });

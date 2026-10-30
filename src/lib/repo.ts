@@ -96,6 +96,10 @@ export type JobCounts = {
   found_website: number;
   /** Of the found, how many no2bounce confirmed at a catch-all company. */
   found_catch_all: number;
+  /** Catch-all people waiting for a no2bounce check someone asked for. */
+  ca_queued: number;
+  /** Catch-all people no2bounce looked at without confirming an address. */
+  ca_checked: number;
   catch_all: number;
   not_found: number;
   unverified: number;
@@ -103,12 +107,17 @@ export type JobCounts = {
   checks_used: number;
 };
 
+/** Catch-all people asked to be verified from a list, and not checked yet. */
+const CA_QUEUED = `r.status = 'catch_all' and r.ca_requested_at is not null and r.ca_checked_at is null`;
+
 const COUNTS_SQL = `
   count(r.id)::int as total,
   count(r.id) filter (where r.status = 'pending')::int as pending,
   count(r.id) filter (where r.status = 'found')::int as found,
   count(r.id) filter (where r.status = 'found' and r.reason = 'website')::int as found_website,
   count(r.id) filter (where r.status = 'found' and r.reason = 'catch_all_verified')::int as found_catch_all,
+  count(r.id) filter (where ${CA_QUEUED})::int as ca_queued,
+  count(r.id) filter (where r.status = 'catch_all' and r.ca_checked_at is not null)::int as ca_checked,
   count(r.id) filter (where r.status = 'catch_all')::int as catch_all,
   count(r.id) filter (where r.status = 'not_found')::int as not_found,
   count(r.id) filter (where r.status = 'unverified')::int as unverified,
@@ -156,6 +165,10 @@ export type JobRow = {
   pattern: string | null;
   reason: string | null;
   checks_used: number;
+  /** Catch-all people only: "queued" for a no2bounce check, or "checked" without a confirmed address. */
+  ca: "queued" | "checked" | null;
+  /** The company's mail provider, once known (google | microsoft | zoho | other | none). */
+  mx_provider: string | null;
 };
 
 export async function listRows(
@@ -164,12 +177,16 @@ export async function listRows(
   opts: { status?: string; q?: string; limit?: number; offset?: number } = {},
 ): Promise<JobRow[]> {
   return db.query<JobRow>(
-    `select id::text, row_no, first, last, domain, input, status, email, pattern, reason, checks_used
-     from job_rows where job_id = $1
-       and ($2::text is null or status = $2 or ($2 = 'no_email' and status in ('catch_all','not_found','unverified')))
-       and ($5::text is null or first || ' ' || last ilike '%' || $5 || '%' or domain ilike '%' || $5 || '%'
-            or email ilike '%' || $5 || '%')
-     order by row_no limit $3 offset $4`,
+    `select r.id::text, r.row_no, r.first, r.last, r.domain, r.input, r.status, r.email, r.pattern, r.reason, r.checks_used,
+       case when r.status <> 'catch_all' then null when r.ca_checked_at is not null then 'checked'
+            when r.ca_requested_at is not null then 'queued' end as ca,
+       d.mx_provider
+     from job_rows r left join domains d on d.domain = r.domain
+     where r.job_id = $1
+       and ($2::text is null or r.status = $2 or ($2 = 'no_email' and r.status in ('catch_all','not_found','unverified')))
+       and ($5::text is null or r.first || ' ' || r.last ilike '%' || $5 || '%' or r.domain ilike '%' || $5 || '%'
+            or r.email ilike '%' || $5 || '%')
+     order by r.row_no limit $3 offset $4`,
     [jobId, opts.status ?? null, opts.limit ?? 100, opts.offset ?? 0, opts.q ?? null],
   );
 }
@@ -449,12 +466,38 @@ export async function catchAllPeople(db: Db, skip: string[], limit = 200): Promi
   return db.query<CatchAllPerson>(
     `select r.id::text as id, r.first, r.last, r.domain, r.linkedin
      from job_rows r join jobs j on j.id = r.job_id join domains d on d.domain = r.domain
-     where r.status = 'catch_all' and r.ca_checked_at is null and j.status <> 'cancelled'
+     where r.status = 'catch_all' and r.ca_checked_at is null and r.ca_requested_at is null and j.status <> 'cancelled'
        and d.ca_accepts_all is not true
        and (d.mx_provider is null or not (d.mx_provider = any($1::text[])))
      order by j.created_at desc, r.domain, r.id limit $2`,
     [skip, limit],
   );
+}
+
+/** Catch-all people someone asked to verify from a list, oldest request first. */
+export async function requestedCatchAllPeople(db: Db, limit = 200): Promise<CatchAllPerson[]> {
+  return db.query<CatchAllPerson>(
+    `select r.id::text as id, r.first, r.last, r.domain, r.linkedin
+     from job_rows r where ${CA_QUEUED}
+     order by r.ca_requested_at, r.domain, r.id limit $1`,
+    [limit],
+  );
+}
+
+/**
+ * Ask for catch-all people in a job to be verified: these ones (`ids`), or every one not
+ * checked yet. People no2bounce already looked at are left out (asking again gets the same answer).
+ * Returns how many were queued.
+ */
+export async function requestCatchAll(db: Db, jobId: string, ids: string[] | null): Promise<number> {
+  const rows = await db.query(
+    `update job_rows set ca_requested_at = now()
+     where job_id = $1 and status = 'catch_all' and ca_checked_at is null and ca_requested_at is null
+       and ($2::bigint[] is null or id = any($2::bigint[]))
+     returning id`,
+    [jobId, ids],
+  );
+  return rows.length;
 }
 
 export type CatchAllCompany = { domain: string; mx_provider: string | null; ca_pattern: string | null; ca_accepts_all: boolean | null };
@@ -503,10 +546,10 @@ export async function latestN2bCheck(db: Db, email: string, days = 90): Promise<
 }
 
 /** Logged before waiting for the answer, so a restart polls it instead of paying again. */
-export async function startN2bCheck(db: Db, email: string, pattern: string, trackingId: string): Promise<string> {
+export async function startN2bCheck(db: Db, email: string, pattern: string, trackingId: string, source = "auto"): Promise<string> {
   const [r] = await db.query<{ id: string }>(
-    `insert into n2b_checks (email, pattern, tracking_id) values ($1, $2, $3) returning id::text`,
-    [email, pattern, trackingId],
+    `insert into n2b_checks (email, pattern, tracking_id, source) values ($1, $2, $3, $4) returning id::text`,
+    [email, pattern, trackingId, source],
   );
   return r.id;
 }
@@ -518,10 +561,12 @@ export async function finishN2bCheck(db: Db, id: string, a: { result: string; st
   );
 }
 
-/** no2bounce credits spent in the last 24 hours (checks still in progress count as 1). */
-export async function n2bCredits24h(db: Db): Promise<number> {
+/** no2bounce credits spent in the last 24 hours (checks still in progress count as 1), for one source or all. */
+export async function n2bCredits24h(db: Db, source?: "auto" | "request"): Promise<number> {
   const [r] = await db.query<{ n: number }>(
-    `select coalesce(sum(credits), 0)::int as n from n2b_checks where created_at > now() - interval '24 hours'`,
+    `select coalesce(sum(credits), 0)::int as n from n2b_checks
+     where created_at > now() - interval '24 hours' and ($1::text is null or source = $1)`,
+    [source ?? null],
   );
   return r.n;
 }
@@ -575,7 +620,7 @@ export async function checksLast24h(db: Db): Promise<number> {
 
 // ---------- worker status ----------
 
-export type WorkerStatus = { state: string; message: string | null; heartbeat_at: string };
+export type WorkerStatus = { state: string; message: string | null; heartbeat_at: string; n2b_credits: number | null };
 
 export async function setWorkerStatus(db: Db, state: string, message: string | null = null) {
   await db.query(
@@ -585,8 +630,13 @@ export async function setWorkerStatus(db: Db, state: string, message: string | n
   );
 }
 
+/** no2bounce credits left on the account, as the worker last saw them. */
+export async function saveN2bCredits(db: Db, credits: number) {
+  await db.query(`update worker_status set n2b_credits = $1, n2b_checked_at = now() where id = 1`, [credits]);
+}
+
 export async function getWorkerStatus(db: Db): Promise<WorkerStatus | null> {
-  const rows = await db.query<WorkerStatus>(`select state, message, heartbeat_at from worker_status where id = 1`);
+  const rows = await db.query<WorkerStatus>(`select state, message, heartbeat_at, n2b_credits from worker_status where id = 1`);
   return rows[0] ?? null;
 }
 

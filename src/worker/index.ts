@@ -42,17 +42,19 @@ async function main() {
     smartLadder: true,
     mxPass: true,
     scrape: process.env.WEBSITE_PASS === "off" ? undefined : (d: string) => scrapeSite(d),
-    // Catch-all pass: on whenever a no2bounce key is set (NO2BOUNCE_PASS=off to pause it).
-    catchAll:
-      n2bKey && process.env.NO2BOUNCE_PASS !== "off"
-        ? {
-            client: createN2bClient({ apiKey: n2bKey }),
-            dailyLimit: num("NO2BOUNCE_DAILY_LIMIT", 3_000),
-            skip: (process.env.NO2BOUNCE_SKIP ?? "google").split(",").map((s) => s.trim()).filter(Boolean),
-            combos: num("NO2BOUNCE_COMBOS", 4),
-            concurrency: num("NO2BOUNCE_CONCURRENCY", 5),
-          }
-        : undefined,
+    // Catch-all checks: on whenever a no2bounce key is set. NO2BOUNCE_PASS=off pauses the
+    // background pass; people asked for from a list are still checked.
+    catchAll: n2bKey
+      ? {
+          client: createN2bClient({ apiKey: n2bKey }),
+          auto: process.env.NO2BOUNCE_PASS !== "off",
+          dailyLimit: num("NO2BOUNCE_DAILY_LIMIT", 3_000),
+          requestLimit: num("NO2BOUNCE_REQUEST_LIMIT", 5_000),
+          skip: (process.env.NO2BOUNCE_SKIP ?? "google").split(",").map((s) => s.trim()).filter(Boolean),
+          combos: num("NO2BOUNCE_COMBOS", 4),
+          concurrency: num("NO2BOUNCE_CONCURRENCY", 5),
+        }
+      : undefined,
     concurrency,
     rateMax: num("MTN_RATE_MAX", 22),
     rateWindowMs: num("MTN_RATE_WINDOW_MS", 10_000),

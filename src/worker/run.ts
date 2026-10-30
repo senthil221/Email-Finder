@@ -4,7 +4,7 @@
 import type { Db } from "@/lib/db";
 import { processDomain } from "@/lib/engine";
 import { createChecker, createProviderGate, FatalError, PauseError } from "@/lib/checker";
-import { CaPause, catchAllRound, createCaChecker } from "@/lib/catchall";
+import { CaPause, catchAllRound, createCaChecker, type CaSource } from "@/lib/catchall";
 import { findAlternateDomain, mxHost, type DnsDeps } from "@/lib/dns";
 import { loadLadder, type LadderInfo } from "@/lib/ladder";
 import type { MtnClient } from "@/lib/mailtester";
@@ -29,7 +29,11 @@ export type WorkerOptions = {
   catchAll?: {
     client: N2bClient;
     dailyLimit: number;
-    /** Mail providers not worth asking about (Google: 0 of 20 in the test). */
+    /** The background pass over every catch-all person (default on). People asked for from a list are always checked. */
+    auto?: boolean;
+    /** Credits per 24 hours for people asked for from a list (default: `dailyLimit`). */
+    requestLimit?: number;
+    /** Mail providers not worth asking about in the background (Google: 0 of 20 in the test). */
     skip: string[];
     combos?: number;
     concurrency?: number;
@@ -299,48 +303,60 @@ export function startWorker(o: WorkerOptions) {
   }
 
   // Catch-all pass (no2bounce, paid): a second opinion on people MailTester could only
-  // call catch-all. Runs beside the MailTester queue, within its own daily credit budget.
+  // call catch-all. Runs beside the MailTester queue, within its own daily credit budgets:
+  // people asked for from a list straight away, everyone else in the background.
   const nap = async (ms: number) => {
     const until = Date.now() + ms;
     while (!stopping && !slotsDone && Date.now() < until) await sleep(Math.min(5_000, until - Date.now()));
   };
-  async function catchAllPass() {
-    const ca = o.catchAll;
-    if (!ca) return;
-    const check = createCaChecker({ db, client: ca.client, dailyLimit: ca.dailyLimit, sleep });
-    let keyCheckedAt = 0;
+  async function catchAllLoop(ca: NonNullable<WorkerOptions["catchAll"]>, source: CaSource) {
+    const name = source === "request" ? "catch-all requests" : "catch-all pass";
+    const dailyLimit = source === "request" ? (ca.requestLimit ?? ca.dailyLimit) : ca.dailyLimit;
+    const check = createCaChecker({ db, client: ca.client, dailyLimit, source, sleep });
     while (!stopping && !slotsDone) {
       try {
-        if (Date.now() - keyCheckedAt > 30 * 60_000) {
-          const credits = await ca.client.credits();
-          keyCheckedAt = Date.now();
-          log(`catch-all pass: ${credits} no2bounce credits left`);
-        }
         const r = await catchAllRound({
           db,
           check,
+          source,
           mxHost: ca.mxHost ?? mxHost,
           skip: ca.skip,
           combos: ca.combos,
           concurrency: ca.concurrency,
         });
-        if (r.checked) log(`catch-all pass: ${r.checked} people checked, ${r.found} found`);
+        if (r.checked) log(`${name}: ${r.checked} people checked, ${r.found} found`);
         // Nothing waiting, or nothing decided (skipped providers, checks still in progress).
-        else await nap(r.people ? 30_000 : 60_000);
+        else await nap(source === "request" ? 10_000 : r.people ? 30_000 : 60_000);
       } catch (e) {
         if (e instanceof CaPause) {
           log(`${e.message}; checking again in 10 minutes`);
           await nap(10 * 60_000);
         } else if (e instanceof N2bRefused) {
-          log(`${e.message}; retrying in 1 hour`);
-          keyCheckedAt = 0;
+          log(`${name}: ${e.message}; retrying in 1 hour`);
           await nap(60 * 60_000);
         } else {
-          log(`catch-all pass failed: ${(e as Error).message}`);
+          log(`${name} failed: ${(e as Error).message}`);
           await nap(60_000);
         }
       }
     }
+  }
+  async function catchAllPass() {
+    const ca = o.catchAll;
+    if (!ca) return;
+    const credits = async () => {
+      while (!stopping && !slotsDone) {
+        try {
+          const n = await ca.client.credits();
+          await repo.saveN2bCredits(db, n);
+          log(`catch-all pass: ${n} no2bounce credits left`);
+        } catch (e) {
+          log(`no2bounce key check failed: ${(e as Error).message}`);
+        }
+        await nap(30 * 60_000);
+      }
+    };
+    await Promise.all([credits(), catchAllLoop(ca, "request"), ca.auto === false ? null : catchAllLoop(ca, "auto")]);
   }
 
   const slots = Array.from({ length: o.concurrency ?? 12 }, (_, i) => slot(i % 2 === 0));

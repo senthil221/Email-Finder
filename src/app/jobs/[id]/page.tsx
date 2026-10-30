@@ -1,33 +1,39 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Asterisk, Check, Download, Layers, Pause, Play, Search, Sparkles, X, Zap } from "lucide-react";
+import { ArrowLeft, Download, Pause, Play, Search, ShieldCheck } from "lucide-react";
 import type { JobRow, JobSummary } from "@/lib/repo";
 import { usePoll } from "@/components/usePoll";
-import { Chip, CopyButton, CountUp, PageHead, Pager, Ring, Seg, StackBar } from "@/components/ui";
+import { CopyButton, PageHead, Pager, Progress, Stat, Status, Tabs } from "@/components/ui";
 import { toast } from "@/components/Shell";
-import { fmtDate, fmtEta, jobState, n, PATTERN_LABEL, REASON_LABEL } from "@/components/format";
+import { fmtDate, fmtEta, foundHow, jobState, n, pct, PATTERN_LABEL, PROVIDER_LABEL, REASON_LABEL, STATUS_LABEL } from "@/components/format";
 
-type Resp = { job: JobSummary; rows: JobRow[]; rate: number; etaMinutes: number | null; recent: JobRow[] };
+type Resp = { job: JobSummary; rows: JobRow[]; rate: number; etaMinutes: number | null };
 
 const TABS = [
   ["", "All", "total"],
   ["found", "Found", "found"],
   ["catch_all", "Catch-all", "catch_all"],
   ["not_found", "Not found", "not_found"],
-  ["unverified", "Unverified", "unverified"],
-  ["pending", "Pending", "pending"],
-  ["invalid_input", "Invalid", "invalid_input"],
+  ["unverified", "Couldn't verify", "unverified"],
+  ["pending", "Waiting", "pending"],
+  ["invalid_input", "Missing info", "invalid_input"],
 ] as const;
+type Tab = (typeof TABS)[number][0];
 const PAGE = 100;
+/** no2bounce combinations tried per person at most (NO2BOUNCE_COMBOS). */
+const MAX_CREDITS = 4;
 
-export default function JobPage() {
+export default function ListPage() {
   const { id } = useParams<{ id: string }>();
-  const [tab, setTab] = useState("");
+  const [tab, setTab] = useState<Tab>("");
   const [page, setPage] = useState(0);
   const [q, setQ] = useState("");
   const [query, setQuery] = useState("");
-  const [acting, setActing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [fast, setFast] = useState(true);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -38,10 +44,14 @@ export default function JobPage() {
   }, [q]);
 
   const url = `/api/jobs/${id}?page=${page}&size=${PAGE}${tab ? `&status=${tab}` : ""}${query ? `&q=${encodeURIComponent(query)}` : ""}`;
-  const { data, error, reload } = usePoll<Resp>(url, 2000);
+  const { data, error, reload } = usePoll<Resp>(url, fast ? 3000 : 15_000);
   const job = data?.job;
 
-  // Toast when the job finishes while you watch.
+  // Refresh quickly only while something is moving.
+  const moving = !job || jobState(job) === "running" || job.ca_queued > 0;
+  if (moving !== fast) setFast(moving);
+
+  // Say so when the list finishes while you watch.
   const wasRunning = useRef(false);
   useEffect(() => {
     if (!job) return;
@@ -49,7 +59,7 @@ export default function JobPage() {
     if (st === "running") wasRunning.current = true;
     else if (st === "done" && wasRunning.current) {
       wasRunning.current = false;
-      toast(`${job.name} finished: ${n(job.found)} emails found`);
+      toast(`${job.name} is done: ${n(job.found)} emails found`);
     }
   }, [job]);
 
@@ -63,227 +73,270 @@ export default function JobPage() {
   if (!job || !data) {
     return (
       <div className="page">
-        <div className="skel" style={{ height: 60, width: 340 }} />
-        <div className="skel" style={{ height: 200 }} />
-        <div className="skel" style={{ height: 300 }} />
+        <div className="skel" style={{ height: 34, width: 320 }} />
+        <div className="skel" style={{ height: 96 }} />
+        <div className="skel" style={{ height: 320 }} />
       </div>
     );
   }
 
   const st = jobState(job);
-  const decided = job.total - job.pending;
-  const pct = job.total ? (decided / job.total) * 100 : 0;
-  const tabCount = TABS.find(([k]) => k === tab)![2];
+  const decided = job.total - job.pending - job.invalid_input;
+  const tabCount = job[TABS.find(([k]) => k === tab)![2]];
+  const caOpen = job.catch_all - job.ca_checked - job.ca_queued;
+  const pickable = data.rows.filter((r) => r.status === "catch_all" && !r.ca);
+  const allPicked = pickable.length > 0 && pickable.every((r) => picked.has(r.id));
+  // People queued or checked since they were picked drop out of the selection.
+  const gone = new Set(data.rows.filter((r) => r.status !== "catch_all" || r.ca).map((r) => r.id));
+  const chosen = [...picked].filter((x) => !gone.has(x));
+  const showPick = tab === "catch_all";
+
+  function changeTab(v: Tab) {
+    setTab(v);
+    setPage(0);
+    setPicked(new Set());
+  }
 
   async function act(path: "cancel" | "start") {
-    setActing(true);
+    setBusy(true);
     await fetch(`/api/jobs/${id}/${path}`, { method: "POST" });
-    toast(path === "cancel" ? "Job stopped. Resume any time." : "Job resumed", path === "cancel" ? "warn" : "ok");
+    toast(path === "cancel" ? "List stopped. You can resume it any time." : "List resumed", path === "cancel" ? "warn" : "ok");
     reload();
-    setActing(false);
+    setBusy(false);
+  }
+
+  async function verify(ids: string[] | null) {
+    const count = ids ? ids.length : caOpen;
+    if (!count) return;
+    const ok = window.confirm(
+      `Check ${n(count)} catch-all ${count === 1 ? "person" : "people"} with no2bounce?\n\nThis uses up to ${n(count * MAX_CREDITS)} credits (at most ${MAX_CREDITS} per person; it stops at the first address that works).`,
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/jobs/${id}/catch-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ids ? { ids } : { all: true }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? res.statusText);
+      toast(`${n(body.queued)} queued for no2bounce. Results appear here as they come in.`);
+      setPicked(new Set());
+      reload();
+    } catch (e) {
+      toast(`Could not queue them: ${(e as Error).message}`, "bad");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
     <div className="page">
-      <PageHead
-        eyebrow={
-          <>
-            <Layers size={13} /> Bulk job · {fmtDate(job.created_at)}
-          </>
-        }
-        title={job.name}
-      >
-        {st === "running" && (
-          <button className="btn btn-danger" onClick={() => act("cancel")} disabled={acting}>
-            <Pause size={14} /> Stop
-          </button>
-        )}
-        {st === "cancelled" && job.pending > 0 && (
-          <button className="btn" onClick={() => act("start")} disabled={acting}>
-            <Play size={14} /> Resume
-          </button>
-        )}
-        <a className="btn" href={`/api/jobs/${id}/export`}>
-          <Download size={14} /> Export all
-        </a>
-        <a
-          className="btn"
-          href={`/api/jobs/${id}/export?status=no_email`}
-          title="Everyone without an email (catch-all, not found, unverified), with your original columns incl. LinkedIn URL"
+      <div>
+        <Link href="/jobs" className="back">
+          <ArrowLeft size={14} /> All lists
+        </Link>
+        <PageHead
+          title={job.name}
+          sub={
+            <>
+              Uploaded {fmtDate(job.created_at)} · {n(job.total)} people · <Status status={st} />
+            </>
+          }
         >
-          <Download size={14} /> No-email list ({n(job.catch_all + job.not_found + job.unverified)})
-        </a>
-        <a className="btn btn-primary" href={`/api/jobs/${id}/export?status=found`}>
-          <Download size={14} /> Export {n(job.found)} found
-        </a>
-      </PageHead>
+          {st === "running" && (
+            <button className="btn btn-danger" onClick={() => act("cancel")} disabled={busy}>
+              <Pause size={15} /> Stop
+            </button>
+          )}
+          {st === "cancelled" && job.pending > 0 && (
+            <button className="btn" onClick={() => act("start")} disabled={busy}>
+              <Play size={15} /> Resume
+            </button>
+          )}
+          <a className="btn" href={`/api/jobs/${id}/export`} title="Every row with your original columns and the results">
+            <Download size={15} /> Everything
+          </a>
+          <a className="btn" href={`/api/jobs/${id}/export?status=no_email`} title="Everyone without an email: catch-all, not found, couldn't verify">
+            <Download size={15} /> No email ({n(job.catch_all + job.not_found + job.unverified)})
+          </a>
+          <a className="btn btn-primary" href={`/api/jobs/${id}/export?status=found`}>
+            <Download size={15} /> Found emails ({n(job.found)})
+          </a>
+        </PageHead>
+      </div>
 
-      <section className="grid g-main">
-        <div className="panel glow rise" style={{ ["--i" as string]: 1 }}>
-          <div className="panel-body" style={{ display: "flex", gap: 26, alignItems: "center", flexWrap: "wrap" }}>
-            <Ring pct={pct} size={150} stroke={11} done={st === "done"}>
-              <b>
-                <CountUp value={Math.round(pct)} />%
-              </b>
-              <span>{st === "done" ? "complete" : st === "running" ? "scanning" : "progress"}</span>
-            </Ring>
-            <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 18 }}>
-              <div className="row" style={{ gap: 10 }}>
-                <Chip status={st === "running" ? "live" : st}>{st === "running" ? "Live" : undefined}</Chip>
-                <span className="muted num">
-                  {n(decided)} of {n(job.total)} people decided
-                </span>
-              </div>
-              <div className="stat-inline">
-                <div>
-                  <span className="k">Found</span>
-                  <span className="v" style={{ color: "var(--ok-ink)" }}>
-                    <CountUp value={job.found} />
-                  </span>
-                </div>
-                <div title="Published on the company's own website: found without a MailTester check">
-                  <span className="k">From websites</span>
-                  <span className="v" style={{ color: "var(--ok-ink)" }}>
-                    <CountUp value={job.found_website ?? 0} />
-                  </span>
-                </div>
-                <div title="At catch-all companies, where MailTester cannot tell: confirmed by no2bounce. Riskier than a MailTester find">
-                  <span className="k">From catch-alls</span>
-                  <span className="v" style={{ color: "var(--ok-ink)" }}>
-                    <CountUp value={job.found_catch_all ?? 0} />
-                  </span>
-                </div>
-                <div>
-                  <span className="k">Catch-all</span>
-                  <span className="v" style={{ color: "var(--warn-ink)" }}>
-                    <CountUp value={job.catch_all} />
-                  </span>
-                </div>
-                <div>
-                  <span className="k">Speed</span>
-                  <span className="v">
-                    {data.rate ? data.rate.toFixed(1) : "–"}
-                    <span className="faint" style={{ fontSize: 12, fontWeight: 400 }}> /min</span>
-                  </span>
-                </div>
-                <div>
-                  <span className="k">Time left</span>
-                  <span className="v">{st === "done" ? "Done" : fmtEta(data.etaMinutes)}</span>
-                </div>
-                <div>
-                  <span className="k">Checks used</span>
-                  <span className="v">
-                    <CountUp value={job.checks_used} />
-                  </span>
-                </div>
-                <div>
-                  <span className="k">Per find</span>
-                  <span className="v">{job.found ? (job.checks_used / job.found).toFixed(1) : "–"}</span>
-                </div>
-              </div>
-              <StackBar counts={job} total={job.total - job.invalid_input} />
-            </div>
+      {st === "running" && (
+        <div className="card card-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="row wrap" style={{ justifyContent: "space-between" }}>
+            <span>
+              <b className="num">{n(job.total - job.pending)}</b> of <span className="num">{n(job.total)}</span> checked
+            </span>
+            <span className="muted">
+              {data.rate ? `${data.rate.toFixed(1)} people a minute · about ${fmtEta(data.etaMinutes)} left` : "Starting…"}
+            </span>
           </div>
+          <Progress pct={job.total ? ((job.total - job.pending) / job.total) * 100 : 0} />
         </div>
+      )}
 
-        <div className="panel rise" style={{ ["--i" as string]: 2 }}>
-          <div className="panel-head">
-            <h2 className="panel-title">
-              {st === "running" ? <span className="live-dot" /> : <Zap size={15} />} Latest results
-            </h2>
-          </div>
-          <div className="feed" style={{ maxHeight: 250 }}>
-            {data.recent.length === 0 && <div className="empty">Results stream in here as people are decided.</div>}
-            {data.recent.map((r) => (
-              <div key={r.id + r.status} className="feed-item is-new">
-                <span className={`fi-icon ${r.status === "found" ? "valid" : r.status === "catch_all" ? "catch_all" : r.status === "unverified" ? "retry" : "invalid"}`}>
-                  {r.status === "found" ? <Check size={13} strokeWidth={2.4} /> : r.status === "catch_all" ? <Asterisk size={13} /> : <X size={13} />}
-                </span>
-                <span style={{ minWidth: 0 }}>
-                  <span style={{ display: "block", textTransform: "capitalize", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {r.first} {r.last}
-                  </span>
-                  <span className="fi-email" style={{ display: "block", fontSize: 11.5, color: r.email ? "var(--ok-ink)" : "var(--faint)" }}>
-                    {r.email ?? r.domain}
-                  </span>
-                </span>
-                <span className="fi-meta num">
-                  {r.checks_used} {r.checks_used === 1 ? "check" : "checks"}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
+      <section className="stats" aria-label="Results">
+        <Stat
+          label="Found"
+          tone="found"
+          value={job.found}
+          sub={`${pct(job.found, decided)} of people checked${job.found_catch_all ? ` · ${n(job.found_catch_all)} via no2bounce` : ""}`}
+        />
+        <Stat label="Catch-all" tone="catch_all" value={job.catch_all} sub="Company accepts any address" />
+        <Stat label="Not found" tone="not_found" value={job.not_found} sub={job.unverified ? `and ${n(job.unverified)} couldn't verify` : "Every combination rejected"} />
+        <Stat label="Waiting" tone="pending" value={job.pending} sub={st === "cancelled" && job.pending ? "List is stopped" : "Still to check"} />
       </section>
 
-      <div className="toolbar rise" style={{ ["--i" as string]: 3 }}>
-        <Seg
-          value={tab}
-          onChange={(v) => {
-            setTab(v);
-            setPage(0);
-          }}
-          items={TABS.map(([value, label, key]) => ({ value, label, count: job[key] }))}
-        />
-        <span className="spacer" />
+      <div className="toolbar">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Tabs
+            label="Filter by result"
+            value={tab}
+            onChange={changeTab}
+            items={TABS.filter(([k, , key]) => !k || job[key] > 0 || k === tab).map(([value, label, key]) => ({ value, label, count: job[key] }))}
+          />
+        </div>
         <div className="search" style={{ width: 260 }}>
-          <Search size={14} />
-          <input className="input" placeholder="Search name, domain or email" value={q} onChange={(e) => setQ(e.target.value)} />
+          <Search size={15} />
+          <label className="sr-only" htmlFor="row-search">
+            Search this list
+          </label>
+          <input id="row-search" className="input" placeholder="Search name, company or email" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
       </div>
 
-      <div className="tbl-wrap rise" style={{ ["--i" as string]: 4 }}>
+      {showPick && (
+        <div className="ca-bar">
+          <ShieldCheck size={20} className="warn-ink" style={{ flex: "none" }} />
+          <div style={{ flex: 1, minWidth: 260, display: "flex", flexDirection: "column", gap: 4 }}>
+            <b>Verify catch-alls with no2bounce</b>
+            <span className="muted" style={{ fontSize: 13 }}>
+              Up to {MAX_CREDITS} credits a person. Confirms about 1 in 6 on Microsoft 365, fewer elsewhere; Google mail almost never.
+            </span>
+            <span className="counts">
+              <span>
+                <span className="num">{n(caOpen)}</span> not checked
+              </span>
+              <span>
+                <span className="num">{n(job.ca_queued)}</span> queued
+              </span>
+              <span>
+                <span className="num">{n(job.ca_checked)}</span> checked, no match
+              </span>
+              <span>
+                <span className="num ok-ink">{n(job.found_catch_all)}</span> confirmed (now in Found)
+              </span>
+            </span>
+          </div>
+          <div className="row wrap">
+            <button className="btn" disabled={busy || chosen.length === 0} onClick={() => verify(chosen)}>
+              Verify selected ({n(chosen.length)})
+            </button>
+            <button className="btn btn-primary" disabled={busy || caOpen === 0} onClick={() => verify(null)}>
+              Verify all not checked ({n(caOpen)})
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="tbl-wrap">
         <table className="tbl">
           <thead>
             <tr>
-              <th>#</th>
-              <th>Person</th>
-              <th>Domain</th>
-              <th>Status</th>
+              {showPick && (
+                <th className="check">
+                  <input
+                    type="checkbox"
+                    aria-label="Select every unchecked person on this page"
+                    checked={allPicked}
+                    disabled={pickable.length === 0}
+                    onChange={() => {
+                      const next = new Set(picked);
+                      for (const r of pickable) {
+                        if (allPicked) next.delete(r.id);
+                        else next.add(r.id);
+                      }
+                      setPicked(next);
+                    }}
+                  />
+                </th>
+              )}
+              <th className="r" style={{ width: 56 }}>
+                #
+              </th>
+              <th>Name</th>
+              <th>Company</th>
+              <th>Result</th>
               <th>Email</th>
-              <th>Pattern</th>
-              <th className="r">Checks</th>
-              <th>Note</th>
+              <th>Details</th>
             </tr>
           </thead>
           <tbody>
-            {data.rows.map((r) => (
-              // Keyed by status too: a row re-mounts, and flashes, the moment it is decided.
-              <tr key={r.id + r.status} className={r.status === "pending" ? "" : "flash"}>
-                <td className="faint num">{r.row_no}</td>
-                <td className="name">{r.first || r.last ? `${r.first} ${r.last}` : <span className="faint">—</span>}</td>
-                <td className="mono muted">{r.domain || <span className="faint">—</span>}</td>
-                <td>
-                  <Chip status={r.status} />
-                </td>
-                <td className="mono">
-                  {r.email ? (
-                    <span className="row" style={{ gap: 4 }}>
-                      {r.email}
-                      <span className="row-act">
+            {data.rows.map((r) => {
+              const canPick = r.status === "catch_all" && !r.ca;
+              return (
+                <tr key={r.id} className={canPick && picked.has(r.id) ? "is-selected" : undefined}>
+                  {showPick && (
+                    <td className="check">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${r.first} ${r.last}`}
+                        checked={canPick && picked.has(r.id)}
+                        disabled={!canPick}
+                        onChange={() => {
+                          const next = new Set(picked);
+                          if (next.has(r.id)) next.delete(r.id);
+                          else next.add(r.id);
+                          setPicked(next);
+                        }}
+                      />
+                    </td>
+                  )}
+                  <td className="r num faint">{r.row_no}</td>
+                  <td className="name">{r.first || r.last ? `${r.first} ${r.last}` : <span className="faint">—</span>}</td>
+                  <td className="muted">{r.domain || <span className="faint">—</span>}</td>
+                  <td>
+                    <Status status={r.status} />
+                  </td>
+                  <td className="email">
+                    {r.email ? (
+                      <span className="row" style={{ gap: 2 }}>
+                        {r.email}
                         <CopyButton text={r.email} />
                       </span>
-                    </span>
-                  ) : (
-                    <span className="faint">—</span>
-                  )}
-                </td>
-                <td>{r.pattern && <span className="tag">{PATTERN_LABEL[r.pattern]}</span>}</td>
-                <td className={`r num${r.checks_used ? "" : " zero"}`}>{r.checks_used}</td>
-                <td className="muted" style={{ fontSize: 12 }}>
-                  {r.reason ? REASON_LABEL[r.reason] ?? r.reason : ""}
-                </td>
-              </tr>
-            ))}
+                    ) : (
+                      <span className="faint">—</span>
+                    )}
+                  </td>
+                  <td className="note">{details(r)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
-        {data.rows.length === 0 && (
-          <div className="empty">
-            <Sparkles size={20} /> {query ? "No matches." : "Nothing here yet."}
-          </div>
-        )}
+        {data.rows.length === 0 && <div className="empty">{query ? "Nobody matches that search." : "Nobody here."}</div>}
       </div>
-      {!query && <Pager page={page} pages={Math.ceil(job[tabCount] / PAGE)} onPage={setPage} />}
+      {!query && <Pager page={page} pages={Math.ceil(tabCount / PAGE)} onPage={setPage} />}
     </div>
   );
+}
+
+function details(r: JobRow): string {
+  if (r.status === "found") {
+    const how = foundHow(r.reason);
+    return r.pattern ? `${how} · ${PATTERN_LABEL[r.pattern] ?? r.pattern}` : how;
+  }
+  if (r.status === "catch_all") {
+    const where = r.mx_provider ? PROVIDER_LABEL[r.mx_provider] : null;
+    const state = r.ca === "queued" ? "Queued for no2bounce" : r.ca === "checked" ? "no2bounce couldn't confirm" : "Not checked by no2bounce yet";
+    return where ? `${state} · ${where}` : state;
+  }
+  if (r.status === "pending") return STATUS_LABEL.pending;
+  return r.reason ? (REASON_LABEL[r.reason] ?? r.reason) : "";
 }

@@ -120,6 +120,12 @@ create table if not exists n2b_checks (
 );
 create index if not exists n2b_checks_email on n2b_checks (email, id desc);
 create index if not exists n2b_checks_created on n2b_checks (created_at);
+-- Catch-all checks asked for from a list: checked straight away, whatever the mail
+-- provider, within their own daily credit budget ("request", apart from the background "auto").
+alter table job_rows add column if not exists ca_requested_at timestamptz;
+create index if not exists job_rows_catch_all_requested on job_rows (ca_requested_at)
+  where status = 'catch_all' and ca_requested_at is not null and ca_checked_at is null;
+alter table n2b_checks add column if not exists source text not null default 'auto';
 
 create table if not exists worker_status (
   id int primary key default 1,
@@ -127,4 +133,6 @@ create table if not exists worker_status (
   message text,
   heartbeat_at timestamptz not null default now()
 );
+alter table worker_status add column if not exists n2b_credits int;
+alter table worker_status add column if not exists n2b_checked_at timestamptz;
 `;
