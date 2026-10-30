@@ -56,7 +56,9 @@ export default function CatchAllsPage() {
   const autoSpent = s?.spent24h.auto ?? 0;
   const reqSpent = s?.spent24h.request ?? 0;
   const atLimit = !!cfg && autoSpent >= cfg.dailyLimit;
-  const working = !!s && (s.inFlight > 0 || (s.auto && !atLimit) || s.totals.queued > 0);
+  // The worker only sends or waits on checks while the pass is on or people are queued;
+  // checks sent just before it was switched off stay unanswered and don't count.
+  const working = !!s && ((s.auto && !atLimit && cfg?.pass !== false) || s.totals.queued > 0);
   const skipped = (cfg?.skip ?? []).map((k) => HOST[k] ?? k).join(", ");
 
   return (
@@ -78,7 +80,7 @@ export default function CatchAllsPage() {
       <section className="grid g-kpi">
         <Kpi i={1} icon={ShieldCheck} tone="var(--ok)" label="Confirmed" value={t?.confirmed} foot={t && (t.checked ? `${rate(t.confirmed, t.checked)} of people checked` : "nobody checked yet")} />
         <Kpi i={2} icon={ListChecks} label="Checked" value={t?.checked} foot={t && `${n(t.checked - t.confirmed)} with no match`} />
-        <Kpi i={3} icon={Clock} tone="var(--info)" label="Queued from lists" value={t?.queued} foot={s && `${n(s.inFlight)} at no2bounce right now`} />
+        <Kpi i={3} icon={Clock} tone="var(--info)" label="Queued from lists" value={t?.queued} foot={s && (working ? `${n(s.inFlight)} at no2bounce right now` : "nothing running")} />
         <Kpi i={4} icon={Asterisk} tone="var(--warn)" label="Not checked yet" value={t?.open} foot={t && `of ${n(t.people)} catch-all people`} />
         <Kpi i={5} icon={Coins} label="Credits · 24h" value={s ? autoSpent + reqSpent : undefined} foot={s && `background ${n(autoSpent)} · your picks ${n(reqSpent)}`} />
         <Kpi
