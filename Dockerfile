@@ -5,7 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npx next build && npm run build:worker
+RUN npx next build && npm run build:worker && npm run build:no2bounce
 
 FROM node:24-alpine
 WORKDIR /app
@@ -14,6 +14,8 @@ COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
 COPY --from=build /app/dist/worker.js ./worker.js
+# Catch-all test: docker compose exec worker node no2bounce-test.js [--go]
+COPY --from=build /app/dist/no2bounce-test.js ./no2bounce-test.js
 USER node
 EXPOSE 3000
 CMD ["node", "server.js"]

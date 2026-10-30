@@ -13,7 +13,8 @@
     "worker:dev": "tsx --env-file=.env.local src/worker/index.ts",
     "dev:db": "pglite-server --db=./.pglite --port=5433 --max-connections=20",
     "dev:mtn": "tsx scripts/mock-mtn.ts",
-    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node22 --outfile=dist/worker.js --external:pg-native --log-level=warning"
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node22 --outfile=dist/worker.js --external:pg-native --log-level=warning",
+    "build:no2bounce": "esbuild scripts/no2bounce-test.ts --bundle --platform=node --target=node22 --outfile=dist/no2bounce-test.js --external:pg-native --log-level=warning"
   },
   "dependencies": {
     "lucide-react": "^1.57.0",
