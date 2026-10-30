@@ -2,8 +2,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Papa from "papaparse";
-import { ArrowLeft, Check, Download, FileSpreadsheet, Upload } from "lucide-react";
-import { PageHead, Progress } from "@/components/ui";
+import { ArrowLeft, Check, Download, FileSpreadsheet, Rocket, UploadCloud } from "lucide-react";
+import { Bar, PageHead } from "@/components/ui";
 import { toast } from "@/components/Shell";
 import { fmtEta, n } from "@/components/format";
 
@@ -39,13 +39,6 @@ function sampleCsv() {
   a.download = "email-finder-template.csv";
   a.click();
 }
-
-const FIELDS = [
-  ["first", "First name", true],
-  ["last", "Last name", false],
-  ["domain", "Company website", true],
-  ["linkedin", "LinkedIn URL", false],
-] as const;
 
 export default function UploadPage() {
   const router = useRouter();
@@ -139,10 +132,10 @@ export default function UploadPage() {
       }
       await post(`/api/jobs/${id}/start`, {});
       setResume(null);
-      toast(`${name || parsed.name} started: ${n(parsed.rows.length - dup)} people to check`);
+      toast(`Launched ${name || parsed.name}: ${n(parsed.rows.length - dup)} people queued`);
       router.push(`/jobs/${id}`);
     } catch (e) {
-      setError(`Upload stopped (${(e as Error).message}). The rows sent so far are saved: press Resume upload to continue.`);
+      setError(`Upload stopped (${(e as Error).message}). Your rows so far are saved: press Resume upload to continue.`);
       setProgress(null);
     }
   }
@@ -152,27 +145,40 @@ export default function UploadPage() {
 
   return (
     <div className="page">
-      <PageHead title="Upload a list" sub="A CSV with first name, last name and the company website. Your own columns are kept in the download.">
+      <PageHead
+        eyebrow={
+          <>
+            <UploadCloud size={13} /> Bulk upload
+          </>
+        }
+        title={
+          <>
+            Drop a list. <i>Get inboxes.</i>
+          </>
+        }
+        sub="Any CSV with a first name, last name and company website. Your original columns are kept in the export."
+      >
         <button className="btn" onClick={sampleCsv}>
-          <Download size={16} /> Example CSV
+          <Download size={15} /> Template CSV
         </button>
       </PageHead>
 
-      <ol className="steps" aria-label="Steps" style={{ listStyle: "none", margin: 0, padding: 0 }}>
-        {["Choose a file", "Match the columns", "Start"].map((label, i) => (
-          <li key={label} style={{ display: "contents" }}>
-            {i > 0 && <span className="line" aria-hidden="true" />}
-            <span className={`st${step === i + 1 ? " is-on" : step > i + 1 ? " is-done" : ""}`} aria-current={step === i + 1 ? "step" : undefined}>
+      <div className="steps rise" style={{ ["--i" as string]: 1 }}>
+        {["Upload", "Map columns", "Launch"].map((label, i) => (
+          <div key={label} style={{ display: "contents" }}>
+            {i > 0 && <span className="step-line" />}
+            <span className={`step${step === i + 1 ? " is-on" : step > i + 1 ? " is-done" : ""}`}>
               <b>{step > i + 1 ? <Check size={12} strokeWidth={3} /> : i + 1}</b>
               {label}
             </span>
-          </li>
+          </div>
         ))}
-      </ol>
+      </div>
 
       {!parsed && (
         <label
-          className={`drop${over ? " is-over" : ""}`}
+          className={`drop rise${over ? " is-over" : ""}`}
+          style={{ ["--i" as string]: 2 }}
           onDragOver={(e) => {
             e.preventDefault();
             setOver(true);
@@ -185,17 +191,19 @@ export default function UploadPage() {
             if (f) load(f);
           }}
         >
-          <Upload size={28} strokeWidth={1.5} className="muted" />
-          <h3>{over ? "Drop it here" : "Drag your CSV here"}</h3>
-          <p className="muted">or click to choose a file. Large lists are fine.</p>
+          <span className="drop-icon">
+            <UploadCloud size={28} strokeWidth={1.6} />
+          </span>
+          <h3>{over ? "Release to upload" : "Drop your CSV here"}</h3>
+          <p>or click to browse · up to hundreds of thousands of rows</p>
           <span className="btn btn-sm" style={{ marginTop: 6 }}>
-            <FileSpreadsheet size={15} /> Choose file
+            <FileSpreadsheet size={14} /> Choose file
           </span>
           <input
             ref={input}
             type="file"
             accept=".csv,text/csv"
-            className="sr-only"
+            hidden
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f) load(f);
@@ -206,31 +214,41 @@ export default function UploadPage() {
 
       {parsed && (
         <>
-          <section className="card">
-            <div className="card-head">
-              <FileSpreadsheet size={17} className="muted" />
-              <h2>{parsed.name}</h2>
-              <span className="sub num">
+          <section className="panel glow rise" style={{ ["--i" as string]: 2 }}>
+            <div className="panel-head">
+              <h2 className="panel-title">
+                <FileSpreadsheet size={15} /> {parsed.name}
+              </h2>
+              <span className="panel-sub num">
                 {n(parsed.rows.length)} rows · {parsed.headers.length} columns
               </span>
-              <div className="tools">
-                <button className="btn btn-sm" onClick={() => setParsed(null)} disabled={progress !== null || !!resume}>
-                  <ArrowLeft size={14} /> Choose another file
+              <div className="panel-tools">
+                <button className="btn btn-ghost btn-sm" onClick={() => setParsed(null)} disabled={progress !== null || !!resume}>
+                  <ArrowLeft size={13} /> Another file
                 </button>
               </div>
             </div>
-            <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div className="field" style={{ maxWidth: 420 }}>
-                <label htmlFor="jobname">List name</label>
+                <label htmlFor="jobname">Job name</label>
                 <input id="jobname" className="input" value={name} onChange={(e) => setName(e.target.value)} />
               </div>
               <div className="map-grid">
-                {FIELDS.map(([key, label, required]) => (
-                  <div key={key} className="field">
-                    <label htmlFor={`map-${key}`}>
-                      {label} {!required && <span className="faint" style={{ fontWeight: 400 }}>(optional)</span>}
-                    </label>
-                    <select id={`map-${key}`} className="select" value={map[key]} onChange={(e) => setMap({ ...map, [key]: e.target.value })}>
+                {(
+                  [
+                    ["first", "First name", true],
+                    ["last", "Last name", false],
+                    ["domain", "Domain / website", true],
+                    ["linkedin", "LinkedIn URL", false],
+                  ] as const
+                ).map(([key, label, required]) => (
+                  <div key={key} className={`map-card${map[key] ? " ok" : ""}`}>
+                    <div className="mc-head">
+                      {map[key] ? <Check size={14} style={{ color: "var(--ok-ink)" }} /> : <span className="live-dot warn" style={{ width: 7, height: 7 }} />}
+                      {label}
+                      {!required && <span className="faint" style={{ fontWeight: 400 }}>optional</span>}
+                    </div>
+                    <select className="select" value={map[key]} onChange={(e) => setMap({ ...map, [key]: e.target.value })} aria-label={`${label} column`}>
                       <option value="">{required ? "Choose a column…" : "None"}</option>
                       {parsed.headers.map((h) => (
                         <option key={h} value={h}>
@@ -238,69 +256,76 @@ export default function UploadPage() {
                         </option>
                       ))}
                     </select>
-                    <span className="eg">e.g. {map[key] ? sample[map[key]] || "—" : "—"}</span>
+                    <span className="mc-sample">e.g. {map[key] ? sample[map[key]] || "—" : "—"}</span>
                   </div>
                 ))}
               </div>
+
               {est && (
-                <div className="notice info">
-                  <span>
-                    <b>{n(est.valid)}</b> people at <b>{n(est.companies)}</b> companies: about {n(est.low)}–{n(est.high)} MailTester checks, roughly{" "}
-                    {fmtEta(est.minutes)}. One person per company goes first; once their address is proven, the rest usually take a single check.
-                  </span>
+                <div className="est">
+                  <div>
+                    <div className="k">People to find</div>
+                    <div className="v">{n(est.valid)}</div>
+                  </div>
+                  <div>
+                    <div className="k">Companies (scouts)</div>
+                    <div className="v">{n(est.companies)}</div>
+                  </div>
+                  <div>
+                    <div className="k">Estimated checks</div>
+                    <div className="v">
+                      {n(est.low)}–{n(est.high)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="k">Estimated time</div>
+                    <div className="v">~{fmtEta(est.minutes)}</div>
+                  </div>
                 </div>
               )}
             </div>
           </section>
 
-          <section className="card">
-            <div className="card-head">
-              <h2>First rows</h2>
-              <span className="sub">How your file will be read</span>
-            </div>
-            <div style={{ overflowX: "auto" }}>
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th className="r" style={{ width: 56 }}>
-                      #
-                    </th>
-                    <th>First name</th>
-                    <th>Last name</th>
-                    <th>Company website</th>
+          <div className="tbl-wrap rise" style={{ ["--i" as string]: 3 }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>First name</th>
+                  <th>Last name</th>
+                  <th>Domain</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parsed.rows.slice(0, 6).map((r, i) => (
+                  <tr key={i}>
+                    <td className="faint num">{i + 1}</td>
+                    <td>{map.first ? r[map.first] : <span className="faint">—</span>}</td>
+                    <td>{map.last ? r[map.last] : <span className="faint">—</span>}</td>
+                    <td className="mono">{map.domain ? cleanDomain(r[map.domain]) || <span className="faint">—</span> : <span className="faint">—</span>}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {parsed.rows.slice(0, 5).map((r, i) => (
-                    <tr key={i}>
-                      <td className="r num faint">{i + 1}</td>
-                      <td>{map.first ? r[map.first] : <span className="faint">—</span>}</td>
-                      <td>{map.last ? r[map.last] : <span className="faint">—</span>}</td>
-                      <td>{map.domain ? cleanDomain(r[map.domain]) || <span className="faint">—</span> : <span className="faint">—</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-          <div className="card card-body toolbar">
-            {progress !== null ? (
-              <div className="row" style={{ flex: 1, gap: 12 }}>
-                <span className="spinner" />
-                <span>Uploading rows… keep this tab open</span>
-                <div style={{ flex: 1 }}>
-                  <Progress pct={progress} />
+          <div className="panel rise" style={{ ["--i" as string]: 4 }}>
+            <div className="panel-body toolbar">
+              {progress !== null ? (
+                <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 12 }}>
+                  <span className="spinner" />
+                  <span>Uploading rows…</span>
+                  <Bar pct={progress} live style={{ flex: 1 }} />
+                  <span className="num muted">{Math.round(progress)}%</span>
                 </div>
-                <span className="num muted">{Math.round(progress)}%</span>
-              </div>
-            ) : (
-              <span className="muted">{!map.first || !map.domain ? "Choose the first name and company website columns to continue." : "Ready when you are."}</span>
-            )}
-            <span className="spacer" />
-            <button className="btn btn-primary btn-lg" onClick={launch} disabled={!map.first || !map.domain || progress !== null}>
-              {resume ? `Resume upload (row ${n(resume.next + 1)})` : `Start finding${est ? ` ${n(est.valid)} emails` : ""}`}
-            </button>
+              ) : (
+                <span className="muted">One person per company goes first. Once their email is proven, everyone else usually costs a single check.</span>
+              )}
+              <span className="spacer" />
+              <button className="btn btn-primary btn-lg" onClick={launch} disabled={!map.first || !map.domain || progress !== null}>
+                <Rocket size={16} /> {resume ? `Resume upload (row ${n(resume.next + 1)})` : `Launch ${est ? n(est.valid) : ""} lookups`}
+              </button>
+            </div>
           </div>
         </>
       )}

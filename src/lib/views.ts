@@ -1,71 +1,73 @@
-// Read-only queries behind the screens: overview, lookup ladder, lookups, companies.
+// Read-only queries behind the live screens: dashboard, feeds, lookup ladder, domains.
 import type { Db } from "./db";
 import { candidates } from "./patterns";
-import { getDomain } from "./repo";
+import { getDomain, type JobRow } from "./repo";
+
+export type FeedItem = { id: string; email: string; verdict: string; message: string | null; created_at: string };
+
+/** Most recent MailTester calls, newest first. */
+export async function recentVerifications(db: Db, limit = 30): Promise<FeedItem[]> {
+  return db.query<FeedItem>(
+    `select id::text, email, verdict, message, created_at from verifications order by id desc limit $1`,
+    [limit],
+  );
+}
+
+export type Totals = { found: number; catch_all: number; not_found: number; unverified: number; pending: number };
 
 export type Overview = {
-  /** People in every list, bad input left out. */
-  people: number;
-  found: number;
-  /** Of the found: published on the company's own website. */
-  found_website: number;
-  /** Of the found: confirmed by no2bounce at a catch-all company. */
-  found_catch_all: number;
-  catch_all: number;
-  /** Catch-all people no2bounce looked at without confirming an address. */
-  ca_checked: number;
-  not_found: number;
-  unverified: number;
-  /** Waiting in running lists. */
-  pending: number;
-  /** MailTester checks in the last 24 hours. */
   checks24h: number;
   found24h: number;
-  /** no2bounce credits spent in the last 24 hours: background pass and people picked on a list. */
-  n2b24h: { auto: number; request: number };
-  /** no2bounce credits left, as the worker last saw them. */
-  n2bCredits: number | null;
-  /** The company patterns behind the most finds. */
+  decided24h: number;
+  catchAllDomains: number;
+  provenDomains: number;
+  totals: Totals;
+  series: { t: string; checks: number; valid: number }[];
   patterns: { pattern: string; n: number }[];
+  /** no2bounce at catch-all companies: people confirmed and checked, credits spent in 24h and left. */
+  n2b: { confirmed: number; checked: number; spent24h: number; credits: number | null };
 };
 
-/** The few numbers the overview shows. */
 export async function overview(db: Db): Promise<Overview> {
-  const [[t], [a], n2b, [w], patterns] = await Promise.all([
-    db.query<Omit<Overview, "checks24h" | "found24h" | "n2b24h" | "n2bCredits" | "patterns">>(
-      `select count(*) filter (where r.status <> 'invalid_input')::int as people,
-              count(*) filter (where r.status = 'found')::int as found,
-              count(*) filter (where r.status = 'found' and r.reason = 'website')::int as found_website,
-              count(*) filter (where r.status = 'found' and r.reason = 'catch_all_verified')::int as found_catch_all,
+  const [[a], [t], [d], series, patterns, [c]] = await Promise.all([
+    db.query<{ checks24h: number; found24h: number; decided24h: number }>(
+      `select
+         (select count(*)::int from verifications where created_at > now() - interval '24 hours') as "checks24h",
+         (select count(*)::int from job_rows where status = 'found' and updated_at > now() - interval '24 hours') as "found24h",
+         (select count(*)::int from job_rows where status in ('found','catch_all','not_found','unverified')
+            and updated_at > now() - interval '24 hours') as "decided24h"`,
+    ),
+    db.query<Totals>(
+      `select count(*) filter (where r.status = 'found')::int as found,
               count(*) filter (where r.status = 'catch_all')::int as catch_all,
-              count(*) filter (where r.status = 'catch_all' and r.ca_checked_at is not null)::int as ca_checked,
               count(*) filter (where r.status = 'not_found')::int as not_found,
               count(*) filter (where r.status = 'unverified')::int as unverified,
               count(*) filter (where r.status = 'pending' and j.status = 'running')::int as pending
        from job_rows r join jobs j on j.id = r.job_id`,
     ),
-    db.query<{ checks24h: number; found24h: number }>(
-      `select (select count(*)::int from verifications where created_at > now() - interval '24 hours') as "checks24h",
-              (select count(*)::int from job_rows where status = 'found' and updated_at > now() - interval '24 hours') as "found24h"`,
+    db.query<{ catch_all: number; valid: number }>(
+      `select count(*) filter (where status = 'catch_all')::int as catch_all,
+              count(*) filter (where status = 'valid')::int as valid from domains`,
     ),
-    db.query<{ source: string; n: number }>(
-      `select source, coalesce(sum(credits), 0)::int as n from n2b_checks
-       where created_at > now() - interval '24 hours' group by 1`,
+    db.query<{ t: string; checks: number; valid: number }>(
+      `select date_trunc('minute', created_at) as t, count(*)::int as checks,
+              count(*) filter (where verdict = 'valid')::int as valid
+       from verifications where created_at > now() - interval '60 minutes'
+       group by 1 order by 1`,
     ),
-    db.query<{ n2b_credits: number | null }>(`select n2b_credits from worker_status where id = 1`),
     db.query<{ pattern: string; n: number }>(
-      `select pattern, count(*)::int as n from job_rows where status = 'found' and pattern is not null
-       group by 1 order by 2 desc limit 5`,
+      `select pattern, count(*)::int as n from domains where status = 'valid' and pattern is not null
+       group by 1 order by 2 desc limit 9`,
+    ),
+    db.query<Overview["n2b"]>(
+      `select
+         (select count(*)::int from job_rows where status = 'found' and reason = 'catch_all_verified') as confirmed,
+         (select count(*)::int from job_rows where ca_checked_at is not null) as checked,
+         (select coalesce(sum(credits), 0)::int from n2b_checks where created_at > now() - interval '24 hours') as "spent24h",
+         (select n2b_credits from worker_status where id = 1) as credits`,
     ),
   ]);
-  const spent = (s: string) => n2b.find((x) => x.source === s)?.n ?? 0;
-  return {
-    ...t,
-    ...a,
-    n2b24h: { auto: spent("auto"), request: spent("request") },
-    n2bCredits: w?.n2b_credits ?? null,
-    patterns,
-  };
+  return { ...a, catchAllDomains: d.catch_all, provenDomains: d.valid, totals: t, series, patterns, n2b: c };
 }
 
 /** People decided per minute over the last 5 minutes for a job (for the ETA). */
@@ -76,6 +78,15 @@ export async function jobRate(db: Db, jobId: string): Promise<number> {
     [jobId],
   );
   return r.n / 5;
+}
+
+export async function recentlyDecided(db: Db, jobId: string, limit = 12): Promise<JobRow[]> {
+  return db.query<JobRow>(
+    `select id::text, row_no, first, last, domain, input, status, email, pattern, reason, checks_used
+     from job_rows where job_id = $1 and status not in ('pending','invalid_input')
+     order by updated_at desc, id desc limit $2`,
+    [jobId, limit],
+  );
 }
 
 export type Lookup = {
@@ -240,4 +251,114 @@ export async function listDomains(
     siteCounts: { emails, mail_domain, unread },
     site: totals,
   };
+}
+
+// ---------- Insights: which combinations win, and where ----------
+
+export const RANGES = { "24h": "24 hours", "7d": "7 days", "30d": "30 days", all: "100 years" } as const;
+export type Range = keyof typeof RANGES;
+
+export type PatternStat = {
+  pattern: string;
+  tried: number; // checks MailTester answered for this combination
+  accepted: number;
+  rejected: number;
+  catch_all: number;
+  unverifiable: number;
+  finds: number; // people whose final email used this pattern
+  avg_checks: number | null; // checks spent on a person found with this pattern
+};
+
+export type Insights = {
+  range: Range;
+  kpi: { people: number; found: number; catch_all: number; checks: number; accepted: number; rejected: number };
+  patterns: PatternStat[];
+  checksToFind: { checks: number; n: number }[];
+  outcomes: { status: string; reason: string | null; n: number }[];
+  answers: { verdict: string; message: string | null; n: number }[];
+  daily: { day: string; checks: number; found: number; people: number }[];
+  byTld: { tld: string; pattern: string; n: number }[];
+  bySize: { bucket: string; pattern: string; n: number }[];
+  domains: { status: string; n: number }[];
+};
+
+export async function insights(db: Db, range: Range): Promise<Insights> {
+  const since = `now() - interval '${RANGES[range]}'`; // fixed whitelist, never user text
+  const SIZE = `case when s.n = 1 then '1' when s.n <= 5 then '2–5' when s.n <= 20 then '6–20' else '21+' end`;
+  const [[kpi], patterns, finds, checksToFind, outcomes, answers, daily, byTld, bySize, domains] = await Promise.all([
+    db.query<Insights["kpi"]>(
+      `select
+         (select count(*)::int from job_rows where status not in ('pending','invalid_input') and updated_at > ${since}) as people,
+         (select count(*)::int from job_rows where status = 'found' and updated_at > ${since}) as found,
+         (select count(*)::int from job_rows where status = 'catch_all' and updated_at > ${since}) as catch_all,
+         (select count(*)::int from verifications where verdict <> 'rate_limited' and created_at > ${since}) as checks,
+         (select count(*)::int from verifications where verdict = 'valid' and created_at > ${since}) as accepted,
+         (select count(*)::int from verifications where verdict = 'invalid' and created_at > ${since}) as rejected`,
+    ),
+    db.query<Omit<PatternStat, "finds" | "avg_checks">>(
+      `select pattern,
+              count(*) filter (where verdict <> 'rate_limited')::int as tried,
+              count(*) filter (where verdict = 'valid')::int as accepted,
+              count(*) filter (where verdict = 'invalid')::int as rejected,
+              count(*) filter (where verdict = 'catch_all')::int as catch_all,
+              count(*) filter (where verdict = 'retry')::int as unverifiable
+       from verifications where pattern is not null and created_at > ${since} group by pattern`,
+    ),
+    db.query<{ pattern: string; finds: number; avg_checks: number }>(
+      `select pattern, count(*)::int as finds, round(avg(checks_used), 2)::float as avg_checks
+       from job_rows where status = 'found' and pattern is not null and updated_at > ${since} group by pattern`,
+    ),
+    db.query<{ checks: number; n: number }>(
+      `select least(checks_used, 12) as checks, count(*)::int as n from job_rows
+       where status = 'found' and updated_at > ${since} group by 1 order by 1`,
+    ),
+    db.query<{ status: string; reason: string | null; n: number }>(
+      `select status, reason, count(*)::int as n from job_rows
+       where status not in ('pending') and updated_at > ${since} group by 1, 2 order by 3 desc`,
+    ),
+    db.query<{ verdict: string; message: string | null; n: number }>(
+      `select verdict, nullif(message, '') as message, count(*)::int as n from verifications
+       where created_at > ${since} group by 1, 2 order by 3 desc limit 14`,
+    ),
+    db.query<{ day: string; checks: number; found: number; people: number }>(
+      `with d as (select generate_series(date_trunc('day', now()) - interval '13 days', date_trunc('day', now()), interval '1 day') as day)
+       select d.day,
+              (select count(*)::int from verifications v where v.created_at >= d.day and v.created_at < d.day + interval '1 day' and v.verdict <> 'rate_limited') as checks,
+              (select count(*)::int from job_rows r where r.status = 'found' and r.updated_at >= d.day and r.updated_at < d.day + interval '1 day') as found,
+              (select count(*)::int from job_rows r where r.status not in ('pending','invalid_input') and r.updated_at >= d.day and r.updated_at < d.day + interval '1 day') as people
+       from d order by d.day`,
+    ),
+    db.query<{ tld: string; pattern: string; n: number }>(
+      `select coalesce(substring(domain from '\\.((?:co|com|org|net|ac|gov|edu)\\.[a-z]{2})$'), substring(domain from '\\.([a-z0-9-]+)$')) as tld,
+              pattern, count(*)::int as n
+       from job_rows where status = 'found' and pattern is not null and updated_at > ${since}
+       group by 1, 2`,
+    ),
+    db.query<{ bucket: string; pattern: string; n: number }>(
+      `with s as (select domain, count(*) as n from job_rows where status <> 'invalid_input' group by domain)
+       select ${SIZE} as bucket, r.pattern, count(*)::int as n
+       from job_rows r join s on s.domain = r.domain
+       where r.status = 'found' and r.pattern is not null and r.updated_at > ${since}
+       group by 1, 2`,
+    ),
+    db.query<{ status: string; n: number }>(`select status, count(*)::int as n from domains group by 1 order by 2 desc`),
+  ]);
+
+  const findMap = new Map(finds.map((f) => [f.pattern, f]));
+  const names = new Set([...patterns.map((p) => p.pattern), ...finds.map((f) => f.pattern)]);
+  const merged: PatternStat[] = [...names].map((name) => {
+    const p = patterns.find((x) => x.pattern === name);
+    const f = findMap.get(name);
+    return {
+      pattern: name,
+      tried: p?.tried ?? 0,
+      accepted: p?.accepted ?? 0,
+      rejected: p?.rejected ?? 0,
+      catch_all: p?.catch_all ?? 0,
+      unverifiable: p?.unverifiable ?? 0,
+      finds: f?.finds ?? 0,
+      avg_checks: f?.avg_checks ?? null,
+    };
+  });
+  return { range, kpi, patterns: merged, checksToFind, outcomes, answers, daily, byTld, bySize, domains };
 }

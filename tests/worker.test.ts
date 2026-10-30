@@ -230,7 +230,7 @@ describe("free MX pass and free-first queue", () => {
 
 describe("live views on a real schema", () => {
   it("ladder, overview, lookups and domains reflect what the worker did", async () => {
-    const { lookupDetail, overview, listLookups, listDomains } = await import("@/lib/views");
+    const { lookupDetail, overview, listLookups, listDomains, recentVerifications } = await import("@/lib/views");
     const db = await memDb();
     await repo.migrate(db);
     const id = await repo.createJob(db, { name: "Senthil Nathan @ b2bdrive.net", kind: "single", priority: 10 });
@@ -246,10 +246,25 @@ describe("live views on a real schema", () => {
     expect(d?.domain).toMatchObject({ status: "valid", pattern: "first.last" });
 
     const ov = await overview(db);
-    expect(ov).toMatchObject({ people: 1, found: 1, checks24h: 2, found24h: 1, n2b24h: { auto: 0, request: 0 }, n2bCredits: null });
+    expect(ov).toMatchObject({ checks24h: 2, found24h: 1, provenDomains: 1 });
+    expect(ov.totals.found).toBe(1);
+    expect(ov.n2b).toEqual({ confirmed: 0, checked: 0, spent24h: 0, credits: null });
     expect(ov.patterns).toEqual([{ pattern: "first.last", n: 1 }]);
     expect((await listLookups(db)).total).toBe(1);
     expect((await listDomains(db, { status: "valid" })).rows[0]).toMatchObject({ domain: "b2bdrive.net", people: 1, found: 1 });
+    expect(await recentVerifications(db, 5)).toHaveLength(2);
+
+    // Insights: every check is logged with its pattern.
+    const { insights } = await import("@/lib/views");
+    const ins = await insights(db, "7d");
+    const fl = ins.patterns.find((p) => p.pattern === "first.last");
+    const first = ins.patterns.find((p) => p.pattern === "first");
+    expect(fl).toMatchObject({ tried: 1, accepted: 1, finds: 1, avg_checks: 2 });
+    expect(first).toMatchObject({ tried: 1, rejected: 1, finds: 0 });
+    expect(ins.kpi).toMatchObject({ people: 1, found: 1, checks: 2, accepted: 1, rejected: 1 });
+    expect(ins.byTld).toEqual([{ tld: "net", pattern: "first.last", n: 1 }]);
+    expect(ins.checksToFind).toEqual([{ checks: 2, n: 1 }]);
+    expect(ins.daily).toHaveLength(14);
   });
 });
 

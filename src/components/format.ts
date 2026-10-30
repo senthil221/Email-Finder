@@ -5,14 +5,14 @@ export const STATUS_LABEL: Record<string, string> = {
   not_found: "Not found",
   invalid: "Rejected",
   no_mx: "No mail server",
-  unverified: "Couldn't verify",
+  unverified: "Unverified",
   retry: "Retrying",
   rate_limited: "Rate limited",
   fatal: "Account error",
-  pending: "Waiting",
+  pending: "Pending",
   queued: "Queued",
   skipped: "Skipped",
-  invalid_input: "Missing info",
+  invalid_input: "Invalid input",
   running: "Running",
   uploading: "Uploading",
   cancelled: "Stopped",
@@ -34,23 +34,16 @@ export const REASON_LABEL: Record<string, string> = {
   some_unverifiable: "Some combinations could not be checked",
   server_unreachable: "Skipped: mail server kept timing out",
   bad_input: "Missing first name or domain",
-  website: "Published on the company website",
+  website: "Found on the company website",
   catch_all_verified: "Catch-all company: confirmed by no2bounce",
 };
-
-/** How a found email was confirmed. */
-export function foundHow(reason: string | null): string {
-  if (reason === "website") return "On the company website";
-  if (reason === "catch_all_verified") return "Confirmed by no2bounce (catch-all company)";
-  return "Verified by MailTester";
-}
 
 export const PROVIDER_LABEL: Record<string, string> = {
   google: "Google mail",
   microsoft: "Microsoft 365",
   zoho: "Zoho mail",
-  other: "Other mail host",
-  none: "No mail server",
+  other: "other mail host",
+  none: "no mail server",
 };
 
 export const PATTERN_LABEL: Record<string, string> = {
@@ -84,7 +77,7 @@ export function fmtDate(s: string): string {
 }
 
 export function fmtEta(min: number | null): string {
-  if (min === null || !Number.isFinite(min)) return "—";
+  if (min === null || !Number.isFinite(min)) return "–";
   if (min < 1) return "< 1 min";
   if (min < 60) return `${Math.round(min)} min`;
   const h = Math.floor(min / 60);
@@ -99,5 +92,3 @@ export function compact(v: number): string {
 }
 
 export const n = (v: number) => v.toLocaleString();
-
-export const pct = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : "—");

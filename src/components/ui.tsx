@@ -1,26 +1,160 @@
 "use client";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 import { STATUS_LABEL, n } from "./format";
 
-/** A coloured dot and a word. */
-export function Status({ status, children }: { status: string; children?: ReactNode }) {
+/** Number that rolls to its new value. */
+export function CountUp({ value, decimals = 0, ms = 900 }: { value: number; decimals?: number; ms?: number }) {
+  const [shown, setShown] = useState(0);
+  const from = useRef(0);
+  useEffect(() => {
+    const start = performance.now();
+    const a = from.current;
+    let raf = 0;
+    const tick = (t: number) => {
+      const p = Math.min(1, (t - start) / ms);
+      const e = 1 - Math.pow(1 - p, 4);
+      const v = a + (value - a) * e;
+      setShown(v);
+      if (p < 1) raf = requestAnimationFrame(tick);
+      else from.current = value;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      from.current = value;
+    };
+  }, [value, ms]);
+  return <>{decimals ? shown.toFixed(decimals) : n(Math.round(shown))}</>;
+}
+
+export function Chip({ status, children }: { status: string; children?: ReactNode }) {
+  return <span className={`chip ${status}`}>{children ?? STATUS_LABEL[status] ?? status}</span>;
+}
+
+export function Ring({
+  pct,
+  size = 120,
+  stroke = 9,
+  done,
+  warn,
+  children,
+}: {
+  pct: number;
+  size?: number;
+  stroke?: number;
+  done?: boolean;
+  warn?: boolean;
+  children?: ReactNode;
+}) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const [p, setP] = useState(0);
+  useEffect(() => {
+    const t = requestAnimationFrame(() => setP(Math.max(0, Math.min(100, pct))));
+    return () => cancelAnimationFrame(t);
+  }, [pct]);
   return (
-    <span className="status">
-      <span className={`dot ${status}`} aria-hidden="true" />
-      {children ?? STATUS_LABEL[status] ?? status}
-    </span>
+    <div className={`ring${done ? " is-done" : ""}${warn ? " warn" : ""}`} style={{ width: size, height: size }}>
+      <svg width={size} height={size}>
+        <circle className="track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} />
+        <circle
+          className="fill"
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          strokeWidth={stroke}
+          strokeDasharray={c}
+          strokeDashoffset={c - (p / 100) * c}
+        />
+      </svg>
+      <div className="ring-label">{children}</div>
+    </div>
   );
 }
 
-export function CopyButton({ text, label = "Copy email" }: { text: string; label?: string }) {
+export function Bar({ pct, live, done, style }: { pct: number; live?: boolean; done?: boolean; style?: React.CSSProperties }) {
+  return (
+    <div className={`bar${live ? " is-live" : ""}${done ? " is-done" : ""}`} style={style}>
+      <i style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+    </div>
+  );
+}
+
+const STACK = ["found", "catch_all", "not_found", "unverified"] as const;
+
+/** Result mix as one bar: found / catch-all / not found / unverified, remaining track = still pending. */
+export function StackBar({
+  counts,
+  total,
+  height = 10,
+  legend = true,
+}: {
+  counts: Partial<Record<(typeof STACK)[number], number>>;
+  total: number;
+  height?: number;
+  legend?: boolean;
+}) {
+  const [tip, setTip] = useState<{ x: number; label: string; v: number } | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const done = STACK.reduce((s, k) => s + (counts[k] ?? 0), 0);
+  const rest = Math.max(0, total - done);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div ref={box} style={{ position: "relative" }} onPointerLeave={() => setTip(null)}>
+        <div className="stack" style={{ height }} role="img" aria-label={STACK.map((k) => `${STATUS_LABEL[k]} ${counts[k] ?? 0}`).join(", ")}>
+          {STACK.map((k) =>
+            (counts[k] ?? 0) > 0 ? (
+              <span
+                key={k}
+                className={`s-${k}`}
+                style={{ flexGrow: counts[k] }}
+                onPointerMove={(e) => {
+                  const rect = box.current!.getBoundingClientRect();
+                  setTip({ x: e.clientX - rect.left, label: STATUS_LABEL[k], v: counts[k]! });
+                }}
+              />
+            ) : null,
+          )}
+          {rest > 0 && <span className="s-pending" style={{ flexGrow: rest }} />}
+        </div>
+        {tip && (
+          <div className="tip" style={{ left: tip.x, top: 0 }}>
+            <div className="t-row">
+              <b>{n(tip.v)}</b>
+              <span className="muted">{tip.label}</span>
+              <span className="faint">{total ? Math.round((tip.v / total) * 100) : 0}%</span>
+            </div>
+          </div>
+        )}
+      </div>
+      {legend && (
+        <div className="legend">
+          {STACK.map((k) => (
+            <span key={k}>
+              <i className={`s-${k}`} />
+              {STATUS_LABEL[k]} <b>{n(counts[k] ?? 0)}</b>
+            </span>
+          ))}
+          {rest > 0 && (
+            <span>
+              <i style={{ background: "var(--surface-4)" }} />
+              Pending <b>{n(rest)}</b>
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function CopyButton({ text, size = 14 }: { text: string; size?: number }) {
   const [ok, setOk] = useState(false);
   return (
     <button
-      type="button"
-      className="icon-btn copy"
-      title={label}
-      aria-label={`${label}: ${text}`}
+      className="copy-btn copy"
+      title="Copy email"
       onClick={(e) => {
         e.stopPropagation();
         navigator.clipboard?.writeText(text);
@@ -28,33 +162,25 @@ export function CopyButton({ text, label = "Copy email" }: { text: string; label
         setTimeout(() => setOk(false), 1200);
       }}
     >
-      {ok ? <Check size={15} className="ok-ink" /> : <Copy size={15} strokeWidth={1.6} />}
+      {ok ? <Check size={size} style={{ color: "var(--ok-ink)" }} /> : <Copy size={size} strokeWidth={1.6} />}
     </button>
   );
 }
 
-export function Tabs<T extends string>({
+export function Seg<T extends string>({
   value,
   onChange,
   items,
-  label,
 }: {
   value: T;
   onChange: (v: T) => void;
-  items: { value: T; label: string; count?: number }[];
-  label: string;
+  items: { value: T; label: string; count?: number; swatch?: string }[];
 }) {
   return (
-    <div className="tabs" role="tablist" aria-label={label}>
+    <div className="seg" role="tablist">
       {items.map((it) => (
-        <button
-          key={it.value}
-          type="button"
-          role="tab"
-          aria-selected={value === it.value}
-          className={`tab${value === it.value ? " is-on" : ""}`}
-          onClick={() => onChange(it.value)}
-        >
+        <button key={it.value} role="tab" aria-selected={value === it.value} className={value === it.value ? "is-on" : ""} onClick={() => onChange(it.value)}>
+          {it.swatch && <i className={`sw ${it.swatch}`} />}
           {it.label}
           {it.count !== undefined && <span className="n">{n(it.count)}</span>}
         </button>
@@ -68,9 +194,9 @@ export function Pager({ page, pages, onPage }: { page: number; pages: number; on
   return (
     <div className="pager">
       <span className="num">
-        Page {n(page + 1)} of {n(pages)}
+        Page {page + 1} of {n(pages)}
       </span>
-      <div className="row">
+      <div className="toolbar">
         <button className="btn btn-sm" disabled={page === 0} onClick={() => onPage(page - 1)}>
           Previous
         </button>
@@ -82,38 +208,26 @@ export function Pager({ page, pages, onPage }: { page: number; pages: number; on
   );
 }
 
-export function PageHead({ title, sub, children }: { title: ReactNode; sub?: ReactNode; children?: ReactNode }) {
+export function PageHead({
+  eyebrow,
+  title,
+  sub,
+  children,
+}: {
+  eyebrow?: ReactNode;
+  title: ReactNode;
+  sub?: ReactNode;
+  children?: ReactNode;
+}) {
   return (
-    <header className="page-head">
+    <header className="page-head rise">
       <div>
-        <h1>{title}</h1>
-        {sub && <p>{sub}</p>}
+        {eyebrow && <div className="eyebrow">{eyebrow}</div>}
+        <h1 className="page-title">{title}</h1>
+        {sub && <p className="page-sub">{sub}</p>}
       </div>
-      {children && <div className="actions">{children}</div>}
+      {children && <div className="page-actions">{children}</div>}
     </header>
-  );
-}
-
-/** One headline number. */
-export function Stat({ label, value, sub, tone }: { label: ReactNode; value: number | string | undefined; sub?: ReactNode; tone?: string }) {
-  return (
-    <div className="stat">
-      <div className="k">
-        {tone && <span className={`dot ${tone}`} aria-hidden="true" />}
-        {label}
-      </div>
-      <div className="v">{value === undefined ? <span className="skel" style={{ display: "inline-block", width: 80, height: 26 }} /> : typeof value === "number" ? n(value) : value}</div>
-      {sub && <div className="s">{sub}</div>}
-    </div>
-  );
-}
-
-export function Progress({ pct, done }: { pct: number; done?: boolean }) {
-  const v = Math.max(0, Math.min(100, pct));
-  return (
-    <div className={`progress${done ? " done" : ""}`} role="progressbar" aria-valuenow={Math.round(v)} aria-valuemin={0} aria-valuemax={100}>
-      <i style={{ width: `${v}%` }} />
-    </div>
   );
 }
 
@@ -130,14 +244,4 @@ export function Ago({ at }: { at: string | null }) {
   const s = Math.max(0, Math.round((now - new Date(at).getTime()) / 1000));
   const txt = s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`;
   return <span className="num">{txt}</span>;
-}
-
-export function Skeleton({ rows = 5 }: { rows?: number }) {
-  return (
-    <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-      {Array.from({ length: rows }, (_, i) => (
-        <div key={i} className="skel" style={{ height: 24 }} />
-      ))}
-    </div>
-  );
 }

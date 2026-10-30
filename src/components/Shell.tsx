@@ -1,28 +1,21 @@
 "use client";
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Building2, Check, Home, List, Mail, Search, Upload, X } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { AlertTriangle, ArrowRight, BarChart3, Check, Globe, History, LayoutDashboard, ScanSearch, Search, ShieldCheck, UploadCloud, X } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
 import { usePoll } from "./usePoll";
-import { compact } from "./format";
+import { Ring } from "./ui";
+import { compact, n, STATUS_LABEL } from "./format";
 
 const NAV = [
-  { href: "/", label: "Overview", icon: Home, match: (p: string) => p === "/" },
-  { href: "/find", label: "Find one email", icon: Search, match: (p: string) => p.startsWith("/find") },
-  { href: "/upload", label: "Upload a list", icon: Upload, match: (p: string) => p.startsWith("/upload") },
-  { href: "/jobs", label: "Lists", icon: List, match: (p: string) => p.startsWith("/jobs") },
-  { href: "/domains", label: "Companies", icon: Building2, match: (p: string) => p.startsWith("/domains") },
+  { href: "/", label: "Dashboard", icon: LayoutDashboard, match: (p: string) => p === "/" },
+  { href: "/find", label: "Live finder", icon: ScanSearch, match: (p: string) => p.startsWith("/find"), kbd: "K" },
+  { href: "/upload", label: "Bulk upload", icon: UploadCloud, match: (p: string) => p.startsWith("/upload") },
+  { href: "/jobs", label: "History", icon: History, match: (p: string) => p.startsWith("/jobs") },
+  { href: "/insights", label: "Insights", icon: BarChart3, match: (p: string) => p.startsWith("/insights") },
+  { href: "/domains", label: "Domains", icon: Globe, match: (p: string) => p.startsWith("/domains") },
 ];
-
-const WORKER_WORD: Record<string, string> = {
-  running: "Finder is working",
-  idle: "Finder is idle",
-  paused_daily_limit: "Paused: daily limit reached",
-  error: "Finder has a problem",
-  offline: "Finder is offline",
-  stopped: "Finder is stopped",
-};
 
 type Status = {
   worker: { state: string; message: string | null; n2b_credits: number | null } | null;
@@ -42,16 +35,16 @@ function Toasts() {
     const on = (e: Event) => {
       const t = { id: Date.now() + Math.random(), ...(e as CustomEvent).detail } as Toast;
       setItems((x) => [...x.slice(-3), t]);
-      setTimeout(() => setItems((x) => x.filter((i) => i.id !== t.id)), 4500);
+      setTimeout(() => setItems((x) => x.filter((i) => i.id !== t.id)), 4200);
     };
     window.addEventListener("ef-toast", on);
     return () => window.removeEventListener("ef-toast", on);
   }, []);
   return (
-    <div className="toasts" role="status" aria-live="polite">
+    <div className="toasts" aria-live="polite">
       {items.map((t) => (
-        <div key={t.id} className="toast">
-          {t.tone === "bad" ? <X size={16} className="bad-ink" /> : <Check size={16} className={t.tone === "ok" ? "ok-ink" : "warn-ink"} />}
+        <div key={t.id} className={`toast ${t.tone}`}>
+          <span className="t-ico">{t.tone === "ok" ? <Check size={15} strokeWidth={3} /> : t.tone === "warn" ? <AlertTriangle size={14} /> : <X size={15} />}</span>
           {t.text}
         </div>
       ))}
@@ -59,57 +52,201 @@ function Toasts() {
   );
 }
 
+// ---------- command palette: "senthil nathan b2bdrive.net" + Enter ----------
+export function parseQuick(q: string): { first: string; last: string; domain: string } {
+  const parts = q.trim().split(/[\s,]+/).filter(Boolean);
+  const di = parts.findLastIndex((p) => p.includes("."));
+  const domain =
+    di >= 0
+      ? parts.splice(di, 1)[0].toLowerCase().replace(/^.*@/, "").replace(/^[a-z]+:\/\//, "").split(/[/?#]/)[0].replace(/^www\d*\./, "")
+      : "";
+  return { first: parts[0] ?? "", last: parts.slice(1).join(" "), domain };
+}
+
+function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const router = useRouter();
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  const p = parseQuick(q);
+  const ready = !!p.first && !!p.domain;
+
+  useEffect(() => {
+    if (open) setTimeout(() => input.current?.focus(), 10);
+  }, [open]);
+
+  const run = async () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error);
+      onClose();
+      setQ("");
+      router.push(`/find?id=${body.id}`);
+    } catch (e) {
+      toast((e as Error).message, "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) return null;
+  return (
+    <div className="cmdk-overlay" onMouseDown={onClose}>
+      <div className="cmdk" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-label="Quick find">
+        <div className="cmdk-input">
+          <ScanSearch size={18} />
+          <input
+            ref={input}
+            value={q}
+            placeholder="Andrew Deepak acme.com"
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") run();
+              if (e.key === "Escape") onClose();
+            }}
+          />
+          {busy ? <span className="spinner" /> : <span className="kbd">↵</span>}
+        </div>
+        <div className="cmdk-hint">
+          {q ? (
+            <div className="cmdk-parse">
+              <span>
+                <em>first</em> {p.first || "–"}
+              </span>
+              <span>
+                <em>last</em> {p.last || "–"}
+              </span>
+              <span>
+                <em>domain</em> {p.domain || "–"}
+              </span>
+              {ready && <span style={{ background: "var(--accent-soft)", color: "var(--ink)" }}>Press Enter to find</span>}
+            </div>
+          ) : (
+            <span>Type a name and a company domain, then press Enter. The lookup starts at once.</span>
+          )}
+        </div>
+        <div className="cmdk-list">
+          {NAV.map(({ href, label, icon: Icon }) => (
+            <Link key={href} href={href} onClick={onClose}>
+              <Icon size={15} strokeWidth={1.6} /> {label}
+              <ArrowRight size={13} style={{ marginLeft: "auto" }} />
+            </Link>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const TITLES: [RegExp, string][] = [
+  [/^\/$/, "Dashboard"],
+  [/^\/find/, "Live finder"],
+  [/^\/upload/, "Bulk upload"],
+  [/^\/jobs\/./, "Job"],
+  [/^\/jobs/, "History"],
+  [/^\/domains/, "Domains"],
+  [/^\/insights/, "Insights"],
+];
+
 export function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { data } = usePoll<Status>("/api/status", 10_000);
+  const [palette, setPalette] = useState(false);
+  const { data } = usePoll<Status>("/api/status", 5000);
+  const close = useCallback(() => setPalette(false), []);
+
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, []);
+
   const state = data ? (data.online ? (data.worker?.state ?? "idle") : "offline") : null;
-  const dot = state === "running" ? "done" : state === "paused_daily_limit" ? "pending" : state === "error" || state === "offline" ? "error" : "idle";
+  const pct = data ? (data.checksLast24h / data.dailyLimit) * 100 : 0;
+  const title = TITLES.find(([re]) => re.test(pathname))?.[1] ?? "";
+  const dot = state === "running" ? "" : state === "idle" ? "idle" : state === "paused_daily_limit" ? "warn" : "off";
 
   return (
     <div className="app">
-      <aside className="side">
+      <aside className="rail">
         <Link href="/" className="brand">
-          <span className="brand-mark">
-            <Mail size={15} strokeWidth={2} />
+          <span className="radar" />
+          <span className="brand-name">
+            Email <i>Finder</i>
           </span>
-          Email Finder
         </Link>
-        <nav className="nav" aria-label="Main">
-          {NAV.map(({ href, label, icon: Icon, match }) => (
-            <Link key={href} href={href} className={match(pathname) ? "is-on" : ""} aria-current={match(pathname) ? "page" : undefined}>
-              <Icon size={17} strokeWidth={1.6} />
+        <nav className="nav">
+          <div className="nav-label">Workspace</div>
+          {NAV.map(({ href, label, icon: Icon, match, kbd }) => (
+            <Link key={href} href={href} className={match(pathname) ? "is-on" : ""}>
+              <Icon size={16} strokeWidth={1.6} />
               {label}
+              {kbd && <span className="kbd">Ctrl {kbd}</span>}
             </Link>
           ))}
         </nav>
-        <div className="side-foot">
+        <div className="rail-foot">
           {data && (
-            <>
-              <span className="status" title={data.worker?.message ?? ""}>
-                <span className={`dot ${dot}`} />
-                {WORKER_WORD[state ?? ""] ?? `Finder: ${state}`}
-              </span>
-              {state === "error" && data.worker?.message && <span className="bad-ink">{data.worker.message}</span>}
-              <span className="meter-line" title="MailTester checks in the last 24 hours, of the daily limit">
-                <span>MailTester today</span>
-                <span className="num">
-                  {compact(data.checksLast24h)} / {compact(data.dailyLimit)}
-                </span>
-              </span>
+            <div className="quota" title={data.worker?.message ?? ""}>
+              <Ring pct={pct} size={44} stroke={5} warn={pct > 85}>
+                <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: 0, textTransform: "none", color: "var(--ink)" }}>{Math.round(pct)}%</span>
+              </Ring>
+              <div>
+                <div className="q-label">MailTester · 24h</div>
+                <div className="q-val">
+                  {compact(data.checksLast24h)} <span className="faint" style={{ fontWeight: 400 }}>/ {compact(data.dailyLimit)}</span>
+                </div>
+              </div>
               {data.worker?.n2b_credits != null && (
-                <span className="meter-line" title="no2bounce credits left on the account">
-                  <span>no2bounce credits</span>
-                  <span className="num">{compact(data.worker.n2b_credits)}</span>
-                </span>
+                <div className="q-sub" title="no2bounce credits left, for catch-all checks">
+                  <ShieldCheck size={13} strokeWidth={1.7} />
+                  no2bounce · {compact(data.worker.n2b_credits)} credits left
+                </div>
               )}
-            </>
+              <div className="q-sub">
+                <span className={`live-dot ${dot}`} />
+                Worker {STATUS_LABEL[state ?? ""]?.toLowerCase() ?? state}
+              </div>
+              {state === "error" && data.worker?.message && (
+                <div style={{ gridColumn: "1 / -1", fontSize: 11.5, color: "var(--bad-ink)" }}>{data.worker.message}</div>
+              )}
+            </div>
           )}
-          <div className="row" style={{ marginLeft: -6 }}>
-            <ThemeToggle />
-          </div>
         </div>
       </aside>
-      <main className="main">{children}</main>
+      <div className="main">
+        <header className="top">
+          <div className="crumbs">
+            <span>Email Finder</span>
+            <span className="faint">/</span>
+            <b>{title}</b>
+          </div>
+          <div className="top-tools">
+            <button className="cmdk-trigger" onClick={() => setPalette(true)}>
+              <Search size={14} />
+              <span className="label">Find an email…</span>
+              <span className="kbd">Ctrl K</span>
+            </button>
+            {data && (
+              <span className={`chip ${state === "running" ? "live" : (state ?? "")}`} title={`${n(data.checksLast24h)} checks in 24h`}>
+                {state === "running" ? "Live" : STATUS_LABEL[state ?? ""]}
+              </span>
+            )}
+            <ThemeToggle />
+          </div>
+        </header>
+        <div key={pathname} style={{ animation: "fade 220ms var(--ease)" }}>
+          {children}
+        </div>
+      </div>
+      <CommandPalette open={palette} onClose={close} />
       <Toasts />
     </div>
   );
