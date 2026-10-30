@@ -1,7 +1,7 @@
-// Read-only queries behind the live screens: dashboard, feeds, lookup ladder, domains.
+// Read-only queries behind the live screens: dashboard, feeds, lookup ladder, domains, catch-alls.
 import type { Db } from "./db";
 import { candidates } from "./patterns";
-import { getDomain, type JobRow } from "./repo";
+import { CA_AUTO, CA_CONFIG, getDomain, getSetting, type CaConfig, type JobRow } from "./repo";
 
 export type FeedItem = { id: string; email: string; verdict: string; message: string | null; created_at: string };
 
@@ -361,4 +361,86 @@ export async function insights(db: Db, range: Range): Promise<Insights> {
     };
   });
   return { range, kpi, patterns: merged, checksToFind, outcomes, answers, daily, byTld, bySize, domains };
+}
+
+// ---------- Catch-alls: no2bounce progress and controls ----------
+
+const CA_PEOPLE = `(r.status = 'catch_all' or (r.status = 'found' and r.reason = 'catch_all_verified'))`;
+
+export type CaCounts = {
+  /** Every catch-all person, confirmed ones included. */
+  people: number;
+  /** Not looked at by no2bounce yet, and not queued. */
+  open: number;
+  /** Picked on a list, waiting their turn. */
+  queued: number;
+  /** Looked at by no2bounce (confirmed or not). */
+  checked: number;
+  confirmed: number;
+};
+
+export type CatchAllView = {
+  /** The background pass is switched on in the app. */
+  auto: boolean;
+  /** What the worker runs with; null until a worker with a no2bounce key has started. */
+  config: CaConfig | null;
+  totals: CaCounts;
+  /** Checks sent to no2bounce in the last hour and not answered yet. */
+  inFlight: number;
+  spent24h: { auto: number; request: number };
+  credits: number | null;
+  providers: (CaCounts & { provider: string })[];
+  lists: (CaCounts & { id: string; name: string; kind: string; created_at: string })[];
+  recent: { id: string; first: string; last: string; domain: string; email: string | null; job_id: string; job_name: string; at: string }[];
+};
+
+const COUNTS = `count(*)::int as people,
+  count(*) filter (where r.status = 'catch_all' and r.ca_checked_at is null and r.ca_requested_at is null)::int as open,
+  count(*) filter (where r.status = 'catch_all' and r.ca_checked_at is null and r.ca_requested_at is not null)::int as queued,
+  count(*) filter (where r.ca_checked_at is not null)::int as checked,
+  count(*) filter (where r.status = 'found')::int as confirmed`;
+
+export async function catchAllView(db: Db): Promise<CatchAllView> {
+  const [auto, config, [totals], [flight], spent, [w], providers, lists, recent] = await Promise.all([
+    getSetting<boolean>(db, CA_AUTO),
+    getSetting<CaConfig>(db, CA_CONFIG),
+    db.query<CaCounts>(`select ${COUNTS} from job_rows r where ${CA_PEOPLE}`),
+    db.query<{ n: number }>(
+      `select count(*)::int as n from n2b_checks where result = 'pending' and created_at > now() - interval '1 hour'`,
+    ),
+    db.query<{ source: string; n: number }>(
+      `select source, coalesce(sum(credits), 0)::int as n from n2b_checks
+       where created_at > now() - interval '24 hours' group by 1`,
+    ),
+    db.query<{ n2b_credits: number | null }>(`select n2b_credits from worker_status where id = 1`),
+    db.query<CaCounts & { provider: string }>(
+      `select coalesce(d.mx_provider, 'unknown') as provider, ${COUNTS}
+       from job_rows r left join domains d on d.domain = r.domain
+       where ${CA_PEOPLE} group by 1 order by 2 desc`,
+    ),
+    db.query<CaCounts & { id: string; name: string; kind: string; created_at: string }>(
+      `select j.id, j.name, j.kind, j.created_at, ${COUNTS}
+       from job_rows r join jobs j on j.id = r.job_id
+       where ${CA_PEOPLE} and j.kind <> 'single'
+       group by j.id order by j.created_at desc limit 50`,
+    ),
+    db.query<CatchAllView["recent"][number]>(
+      `select r.id::text, r.first, r.last, r.domain, case when r.status = 'found' then r.email end as email,
+              j.id as job_id, j.name as job_name, r.ca_checked_at as at
+       from job_rows r join jobs j on j.id = r.job_id
+       where r.ca_checked_at is not null order by r.ca_checked_at desc limit 30`,
+    ),
+  ]);
+  const used = (s: string) => spent.find((x) => x.source === s)?.n ?? 0;
+  return {
+    auto: auto === true,
+    config,
+    totals,
+    inFlight: flight.n,
+    spent24h: { auto: used("auto"), request: used("request") },
+    credits: w?.n2b_credits ?? null,
+    providers,
+    lists,
+    recent,
+  };
 }

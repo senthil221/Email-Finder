@@ -126,6 +126,15 @@ alter table job_rows add column if not exists ca_requested_at timestamptz;
 create index if not exists job_rows_catch_all_requested on job_rows (ca_requested_at)
   where status = 'catch_all' and ca_requested_at is not null and ca_checked_at is null;
 alter table n2b_checks add column if not exists source text not null default 'auto';
+create index if not exists job_rows_ca_checked on job_rows (ca_checked_at desc) where ca_checked_at is not null;
+
+-- Switches set from the app, and what the worker runs with. ca_auto: the background
+-- catch-all pass (off unless switched on). ca_config: the worker's no2bounce limits.
+create table if not exists settings (
+  key text primary key,
+  value jsonb not null,
+  updated_at timestamptz not null default now()
+);
 
 create table if not exists worker_status (
   id int primary key default 1,

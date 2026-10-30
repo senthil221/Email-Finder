@@ -13,6 +13,7 @@ const NAV = [
   { href: "/find", label: "Live finder", icon: ScanSearch, match: (p: string) => p.startsWith("/find"), kbd: "K" },
   { href: "/upload", label: "Bulk upload", icon: UploadCloud, match: (p: string) => p.startsWith("/upload") },
   { href: "/jobs", label: "History", icon: History, match: (p: string) => p.startsWith("/jobs") },
+  { href: "/catch-alls", label: "Catch-alls", icon: ShieldCheck, match: (p: string) => p.startsWith("/catch-alls") },
   { href: "/insights", label: "Insights", icon: BarChart3, match: (p: string) => p.startsWith("/insights") },
   { href: "/domains", label: "Domains", icon: Globe, match: (p: string) => p.startsWith("/domains") },
 ];
@@ -147,6 +148,7 @@ const TITLES: [RegExp, string][] = [
   [/^\/upload/, "Bulk upload"],
   [/^\/jobs\/./, "Job"],
   [/^\/jobs/, "History"],
+  [/^\/catch-alls/, "Catch-alls"],
   [/^\/domains/, "Domains"],
   [/^\/insights/, "Insights"],
 ];

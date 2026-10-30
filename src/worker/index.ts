@@ -42,8 +42,9 @@ async function main() {
     smartLadder: true,
     mxPass: true,
     scrape: process.env.WEBSITE_PASS === "off" ? undefined : (d: string) => scrapeSite(d),
-    // Catch-all checks: on whenever a no2bounce key is set. NO2BOUNCE_PASS=off pauses the
-    // background pass; people asked for from a list are still checked.
+    // Catch-all checks: on whenever a no2bounce key is set. The background pass runs while
+    // switched on in the app; NO2BOUNCE_PASS=off keeps it off whatever the app says.
+    // People asked for from a list are always checked.
     catchAll: n2bKey
       ? {
           client: createN2bClient({ apiKey: n2bKey }),

@@ -29,7 +29,7 @@ export type WorkerOptions = {
   catchAll?: {
     client: N2bClient;
     dailyLimit: number;
-    /** The background pass over every catch-all person (default on). People asked for from a list are always checked. */
+    /** Allow the background pass over every catch-all person (default yes); it runs only while switched on in the app. People asked for from a list are always checked. */
     auto?: boolean;
     /** Credits per 24 hours for people asked for from a list (default: `dailyLimit`). */
     requestLimit?: number;
@@ -313,7 +313,25 @@ export function startWorker(o: WorkerOptions) {
     const name = source === "request" ? "catch-all requests" : "catch-all pass";
     const dailyLimit = source === "request" ? (ca.requestLimit ?? ca.dailyLimit) : ca.dailyLimit;
     const check = createCaChecker({ db, client: ca.client, dailyLimit, source, sleep });
+    // The background pass runs only while switched on in the app (read every few seconds,
+    // and before each person, so switching it off stops it within one person's checks).
+    let on: boolean | null = null;
+    let readAt = 0;
+    const switchedOn = async (): Promise<boolean> => {
+      if (Date.now() - readAt > 5_000) {
+        const next = (await repo.getSetting<boolean>(db, repo.CA_AUTO)) === true;
+        readAt = Date.now();
+        if (next !== on) log(`${name}: ${next ? "on" : "off"} (switched in the app)`);
+        on = next;
+      }
+      return on === true;
+    };
+    const keep = source === "auto" ? () => switchedOn() : (id: string) => repo.stillRequested(db, id);
     while (!stopping && !slotsDone) {
+      if (source === "auto" && !(await switchedOn().catch(() => false))) {
+        await nap(10_000);
+        continue;
+      }
       try {
         const r = await catchAllRound({
           db,
@@ -323,6 +341,7 @@ export function startWorker(o: WorkerOptions) {
           skip: ca.skip,
           combos: ca.combos,
           concurrency: ca.concurrency,
+          keep,
         });
         if (r.checked) log(`${name}: ${r.checked} people checked, ${r.found} found`);
         // Nothing waiting, or nothing decided (skipped providers, checks still in progress).
@@ -356,6 +375,14 @@ export function startWorker(o: WorkerOptions) {
         await nap(30 * 60_000);
       }
     };
+    const config: repo.CaConfig = {
+      pass: ca.auto !== false,
+      dailyLimit: ca.dailyLimit,
+      requestLimit: ca.requestLimit ?? ca.dailyLimit,
+      skip: ca.skip,
+      combos: ca.combos ?? 4,
+    };
+    await repo.setSetting(db, repo.CA_CONFIG, config).catch((e) => log(`saving catch-all settings failed: ${(e as Error).message}`));
     await Promise.all([credits(), catchAllLoop(ca, "request"), ca.auto === false ? null : catchAllLoop(ca, "auto")]);
   }
 

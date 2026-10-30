@@ -43,12 +43,15 @@ export async function verifyCatchAllCompany(args: {
   combos?: number;
   onResult: (personId: string, hit: { email: string; pattern: PatternId } | null) => Promise<void>;
   onCompany: (patch: { pattern?: PatternId; acceptsAll?: boolean }) => Promise<void>;
+  /** Asked before each person: false stops here (switched off, or taken off the queue). */
+  keep?: (personId: string) => Promise<boolean>;
 }): Promise<{ checked: number; found: number }> {
   const company = { ...args.company };
   const tries = [company.pattern, ...CATCH_ALL_PATTERNS.slice(0, args.combos ?? CATCH_ALL_PATTERNS.length)];
   let checked = 0;
   let found = 0;
   for (const person of args.people) {
+    if (args.keep && !(await args.keep(person.id))) break;
     if (company.acceptsAll) {
       await args.onResult(person.id, null);
       continue;
@@ -154,6 +157,8 @@ export async function catchAllRound(d: {
   combos?: number;
   concurrency?: number;
   batchSize?: number;
+  /** Asked before each person: false leaves them for later (switched off, or taken off the queue). */
+  keep?: (personId: string) => Promise<boolean>;
 }): Promise<{ people: number; checked: number; found: number }> {
   const asked = d.source === "request";
   // "none": no mail server any more, nothing to ask about.
@@ -196,6 +201,7 @@ export async function catchAllRound(d: {
             combos: d.combos,
             onResult: (id, hit) => repo.saveCatchAllResult(d.db, id, hit),
             onCompany: (patch) => repo.saveCatchAllCompany(d.db, company.domain, patch),
+            keep: d.keep,
           });
           total.checked += r.checked;
           total.found += r.found;

@@ -1,7 +1,8 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
-import { Asterisk, Check, Download, Layers, Pause, Play, Search, ShieldCheck, Sparkles, X, Zap } from "lucide-react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useParams, useSearchParams } from "next/navigation";
+import { Asterisk, Check, Download, Layers, Pause, Play, Search, ShieldCheck, Sparkles, Square, X, Zap } from "lucide-react";
 import type { JobRow, JobSummary } from "@/lib/repo";
 import { usePoll } from "@/components/usePoll";
 import { Chip, CopyButton, CountUp, PageHead, Pager, Ring, Seg, StackBar } from "@/components/ui";
@@ -24,8 +25,17 @@ const PAGE = 100;
 const MAX_CREDITS = 4;
 
 export default function JobPage() {
+  return (
+    <Suspense>
+      <Job />
+    </Suspense>
+  );
+}
+
+function Job() {
   const { id } = useParams<{ id: string }>();
-  const [tab, setTab] = useState("");
+  const initial = useSearchParams().get("tab") ?? "";
+  const [tab, setTab] = useState(TABS.some(([k]) => k === initial) ? initial : "");
   const [page, setPage] = useState(0);
   const [q, setQ] = useState("");
   const [query, setQuery] = useState("");
@@ -91,6 +101,21 @@ export default function JobPage() {
     toast(path === "cancel" ? "Job stopped. Resume any time." : "Job resumed", path === "cancel" ? "warn" : "ok");
     reload();
     setActing(false);
+  }
+
+  async function stopQueued() {
+    setActing(true);
+    try {
+      const res = await fetch("/api/catch-alls", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stop: id }) });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? res.statusText);
+      toast(`${n(body.stopped)} taken off the no2bounce queue`, "warn");
+      reload();
+    } catch (e) {
+      toast(`Could not stop them: ${(e as Error).message}`, "bad");
+    } finally {
+      setActing(false);
+    }
   }
 
   async function verify(ids: string[] | null) {
@@ -290,9 +315,17 @@ export default function JobPage() {
               <span>
                 <b style={{ color: "var(--ok-ink)" }}>{n(job.found_catch_all ?? 0)}</b> confirmed (now in Found)
               </span>
+              <Link href="/catch-alls" style={{ color: "var(--accent)" }}>
+                All catch-all progress →
+              </Link>
             </span>
           </div>
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            {job.ca_queued > 0 && (
+              <button className="btn btn-danger" disabled={acting} onClick={stopQueued}>
+                <Square size={12} /> Stop queued ({n(job.ca_queued)})
+              </button>
+            )}
             <button className="btn" disabled={acting || chosen.length === 0} onClick={() => verify(chosen)}>
               Verify selected ({n(chosen.length)})
             </button>

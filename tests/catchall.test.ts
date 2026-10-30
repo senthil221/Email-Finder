@@ -208,4 +208,55 @@ describe("catch-all pass on a real schema", () => {
     await expect(catchAllRound({ db: fresh.db, check: tight, mxHost: fresh.mxHost, skip: ["google"] })).rejects.toBeInstanceOf(CaPause);
     expect(await repo.n2bCredits24h(fresh.db)).toBe(2);
   });
+
+  it("stops when switched off or taken off the queue, and shows progress per list and mail host", async () => {
+    const { db, job, mxHost } = await setup();
+    const ids = Object.fromEntries((await repo.listRows(db, job)).map((x) => [x.first, x.id]));
+    const { client, submitted } = fakeN2b({ boxes: ["satpal.singh@boilers.com"] });
+
+    // Switched off before the first person: nobody is checked, nobody is marked.
+    const auto = createCaChecker({ db, client, dailyLimit: 100, sleep: tick });
+    expect(await catchAllRound({ db, check: auto, mxHost, skip: ["google"], keep: async () => false })).toMatchObject({ checked: 0 });
+    expect(submitted).toEqual([]);
+
+    // The switch is a setting the worker reads; off until switched on.
+    expect(await repo.getSetting(db, repo.CA_AUTO)).toBeNull();
+    await repo.setSetting(db, repo.CA_AUTO, true);
+    expect(await repo.getSetting(db, repo.CA_AUTO)).toBe(true);
+
+    // Queued people taken off the queue are left alone, even mid-round.
+    expect(await repo.requestCatchAll(db, job, [ids.satpal, ids.pradeep, ids.hema])).toBe(3);
+    expect(await repo.stopCatchAll(db, job)).toBe(3);
+    expect(await repo.stillRequested(db, ids.satpal)).toBe(false);
+    expect(await repo.getJob(db, job)).toMatchObject({ ca_queued: 0 });
+    await repo.requestCatchAll(db, job, [ids.satpal, ids.pradeep]);
+    const asked = createCaChecker({ db, client, dailyLimit: 100, source: "request", sleep: tick });
+    let first = true;
+    const r = await catchAllRound({
+      db,
+      check: asked,
+      mxHost,
+      skip: ["google"],
+      source: "request",
+      // Satpal is checked; then the rest are stopped from the app.
+      keep: async (id) => {
+        if (!first) await repo.stopCatchAll(db, null);
+        first = false;
+        return repo.stillRequested(db, id);
+      },
+    });
+    expect(r).toMatchObject({ checked: 1, found: 1 });
+    const by = Object.fromEntries((await repo.listRows(db, job)).map((x) => [x.first, x]));
+    expect(by.satpal).toMatchObject({ status: "found", ca: null });
+    expect(by.pradeep).toMatchObject({ status: "catch_all", ca: null });
+
+    const { catchAllView } = await import("@/lib/views");
+    const v = await catchAllView(db);
+    expect(v.auto).toBe(true);
+    expect(v.totals).toEqual({ people: 4, open: 3, queued: 0, checked: 1, confirmed: 1 });
+    expect(v.lists).toMatchObject([{ id: job, people: 4, checked: 1, confirmed: 1 }]);
+    expect(v.providers.find((p) => p.provider === "microsoft")).toMatchObject({ people: 2, checked: 1, confirmed: 1 });
+    expect(v.recent).toMatchObject([{ first: "satpal", email: "satpal.singh@boilers.com" }]);
+    expect(v.spent24h).toEqual({ auto: 0, request: 2 });
+  });
 });

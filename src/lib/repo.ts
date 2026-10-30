@@ -500,6 +500,26 @@ export async function requestCatchAll(db: Db, jobId: string, ids: string[] | nul
   return rows.length;
 }
 
+/**
+ * Take people off the no2bounce queue: one list's (`jobId`) or everyone's. People being
+ * checked right now finish that check; nobody else is started. Returns how many came off.
+ */
+export async function stopCatchAll(db: Db, jobId: string | null): Promise<number> {
+  const rows = await db.query(
+    `update job_rows r set ca_requested_at = null
+     where ${CA_QUEUED} and ($1::uuid is null or r.job_id = $1)
+     returning r.id`,
+    [jobId],
+  );
+  return rows.length;
+}
+
+/** Still on the no2bounce queue (not taken off, not checked yet). */
+export async function stillRequested(db: Db, rowId: string): Promise<boolean> {
+  const rows = await db.query(`select 1 from job_rows r where r.id = $1 and ${CA_QUEUED}`, [rowId]);
+  return rows.length > 0;
+}
+
 export type CatchAllCompany = { domain: string; mx_provider: string | null; ca_pattern: string | null; ca_accepts_all: boolean | null };
 
 export async function catchAllCompanies(db: Db, domains: string[]): Promise<CatchAllCompany[]> {
@@ -616,6 +636,27 @@ export async function checksLast24h(db: Db): Promise<number> {
     `select count(*)::int as n from verifications where created_at > now() - interval '24 hours'`,
   );
   return r.n;
+}
+
+// ---------- settings ----------
+
+/** The background catch-all pass: off unless switched on in the app. */
+export const CA_AUTO = "ca_auto";
+/** What the worker's catch-all pass runs with, saved when it starts. */
+export const CA_CONFIG = "ca_config";
+export type CaConfig = { pass: boolean; dailyLimit: number; requestLimit: number; skip: string[]; combos: number };
+
+export async function getSetting<T>(db: Db, key: string): Promise<T | null> {
+  const [r] = await db.query<{ value: T }>(`select value from settings where key = $1`, [key]);
+  return r ? r.value : null;
+}
+
+export async function setSetting(db: Db, key: string, value: unknown) {
+  await db.query(
+    `insert into settings (key, value, updated_at) values ($1, $2::jsonb, now())
+     on conflict (key) do update set value = excluded.value, updated_at = now()`,
+    [key, JSON.stringify(value)],
+  );
 }
 
 // ---------- worker status ----------
