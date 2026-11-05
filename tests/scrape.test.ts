@@ -130,4 +130,43 @@ describe("scrapeSite", () => {
     });
     expect(await scrapeSite("d.in", { fetch: get, sleep: noWait })).toMatchObject({ outcome: "robots", emails: [] });
   });
+
+  it("a normal page that loads reCAPTCHA for its form is read, not called blocked", async () => {
+    const recaptcha = `<head><title>Acme</title><script src="https://www.google.com/recaptcha/api.js"></script></head>`;
+    const { get } = fakeWeb({
+      "https://e.in/": [200, `${recaptcha}<a href="/contact">Contact</a> ravi@e.in`],
+      "https://e.in/contact": [200, `${recaptcha} neha@e.in`],
+    });
+    const r = await scrapeSite("e.in", { fetch: get, sleep: noWait });
+    expect(r).toMatchObject({ outcome: "ok", pages: 2, detail: "Read 2 pages, 2 addresses published" });
+    const check = fakeWeb({ "https://f.in/": [200, "<title>Security check: CAPTCHA</title>"] });
+    expect(await scrapeSite("f.in", { fetch: check.get, sleep: noWait })).toMatchObject({ outcome: "blocked", detail: "The site shows a bot check instead of the page" });
+  });
+
+  it("says in plain words why a site could not be read", async () => {
+    const at = async (status: number, body = "", headers: Record<string, string> = {}) =>
+      (await scrapeSite("g.in", { fetch: fakeWeb({ "https://g.in/": [status, body, headers] }).get, sleep: noWait })).detail;
+    expect(await at(403)).toBe("The site refuses automated readers (HTTP 403)");
+    expect(await at(429)).toBe("Too many requests: the site is limiting readers (HTTP 429)");
+    expect(await at(503, "", { "cf-mitigated": "challenge" })).toBe("Cloudflare shows a bot check instead of the page");
+    expect(await at(404)).toBe("No home page at this address (HTTP 404)");
+    expect(await at(500)).toBe("The site's server is failing (HTTP 500)");
+
+    const failing = (cause: object, name = "TypeError"): Fetcher => async () => {
+      throw Object.assign(new Error("fetch failed"), { name, cause });
+    };
+    const why = async (f: Fetcher) => (await scrapeSite("h.in", { fetch: f, sleep: noWait })).detail;
+    expect(await why(failing({ code: "ENOTFOUND" }))).toBe("No website: the domain has no web address in DNS");
+    expect(await why(failing({ code: "CERT_HAS_EXPIRED" }))).toBe("The site's security certificate is broken or expired");
+    expect(await why(failing({ code: "ECONNREFUSED" }))).toBe("The server refused the connection");
+    expect(await why(failing({ code: "UND_ERR_CONNECT_TIMEOUT" }))).toContain("Timed out");
+    expect(await why(failing({}, "TimeoutError"))).toContain("Timed out");
+    expect(await why(failing({ message: "redirect count exceeded" }))).toBe("The site redirects in a loop");
+
+    // https failed first: that reason is the one kept when http fails too.
+    const mixed: Fetcher = async (url) => {
+      throw Object.assign(new Error("fetch failed"), { cause: { code: url.startsWith("https") ? "CERT_HAS_EXPIRED" : "ECONNREFUSED" } });
+    };
+    expect(await why(mixed)).toBe("The site's security certificate is broken or expired");
+  });
 });

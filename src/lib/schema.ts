@@ -57,6 +57,7 @@ alter table domains add column if not exists scraped_at timestamptz;
 alter table domains add column if not exists scrape_outcome text;      -- ok | robots | blocked | down
 alter table domains add column if not exists site_emails jsonb;
 alter table domains add column if not exists mail_domain text;
+alter table domains add column if not exists scrape_detail text;       -- the outcome in plain words, e.g. "Timed out"
 -- "website" when the company's own site sent the person to another mail domain.
 alter table job_rows add column if not exists moved_via text;
 create index if not exists job_rows_domain on job_rows (domain);

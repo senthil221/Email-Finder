@@ -142,6 +142,32 @@ export function createCaChecker(d: {
 }
 
 /**
+ * Free DNS: who runs mail at the next catch-all companies not looked up yet, so the people
+ * likeliest to be confirmed can go first. A company without an answer is left as it is
+ * (a round decides it later) and goes in `tried` so this does not keep asking. Returns how many were asked about.
+ */
+export async function lookUpMailProviders(d: {
+  db: Db;
+  mxHost: (domain: string) => Promise<string | null>;
+  tried: Set<string>;
+  limit?: number;
+  concurrency?: number;
+}): Promise<number> {
+  const batch = await repo.catchAllCompaniesToLookUp(d.db, [...d.tried], d.limit ?? 200);
+  const queue = [...batch];
+  await Promise.all(
+    Array.from({ length: d.concurrency ?? 20 }, async () => {
+      for (let domain = queue.shift(); domain; domain = queue.shift()) {
+        d.tried.add(domain);
+        const host = await d.mxHost(domain).catch(() => null);
+        if (host) await repo.saveMxProvider(d.db, domain, mailProvider(host));
+      }
+    }),
+  );
+  return batch.length;
+}
+
+/**
  * One round of the pass: the next batch of unchecked catch-all people, their companies'
  * mail providers looked up (free DNS), skipped providers dropped, then companies in
  * parallel. Errors from one company (pause, refusal) stop the round; the people not

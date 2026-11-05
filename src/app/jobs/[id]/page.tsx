@@ -4,12 +4,13 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Asterisk, Check, Download, Layers, Pause, Play, Search, ShieldCheck, Sparkles, Square, X, Zap } from "lucide-react";
 import type { JobRow, JobSummary } from "@/lib/repo";
+import type { CatchAllOpen } from "@/lib/views";
 import { usePoll } from "@/components/usePoll";
 import { Chip, CopyButton, CountUp, PageHead, Pager, Ring, Seg, StackBar } from "@/components/ui";
 import { toast } from "@/components/Shell";
 import { fmtDate, fmtEta, jobState, n, PATTERN_LABEL, PROVIDER_LABEL, REASON_LABEL } from "@/components/format";
 
-type Resp = { job: JobSummary; rows: JobRow[]; rate: number; etaMinutes: number | null; recent: JobRow[] };
+type Resp = { job: JobSummary; rows: JobRow[]; rate: number; etaMinutes: number | null; recent: JobRow[]; caOpen: CatchAllOpen | null };
 
 const TABS = [
   ["", "All", "total"],
@@ -21,8 +22,8 @@ const TABS = [
   ["invalid_input", "Invalid", "invalid_input"],
 ] as const;
 const PAGE = 100;
-/** no2bounce combinations tried per person at most (NO2BOUNCE_COMBOS). */
-const MAX_CREDITS = 4;
+/** Credits a person has really cost so far, for how-long estimates (most stop before the last combination). */
+const AVG_CREDITS = 3.5;
 
 export default function JobPage() {
   return (
@@ -41,6 +42,8 @@ function Job() {
   const [query, setQuery] = useState("");
   const [acting, setActing] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [count, setCount] = useState("");
+  const [withGoogle, setWithGoogle] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -94,6 +97,32 @@ function Job() {
   // People queued or checked since they were picked drop out of the selection.
   const gone = new Set(data.rows.filter((r) => r.status !== "catch_all" || r.ca).map((r) => r.id));
   const chosen = [...picked].filter((x) => !gone.has(x));
+  // The count box: who it can reach. No mail server: nothing to ask. Google: only if ticked.
+  const open = data.caOpen;
+  const combos = open?.combos ?? 4;
+  const googleOpen = open?.providers.google ?? 0;
+  const reachable = Object.entries(open?.providers ?? {}).reduce(
+    (sum, [p, people]) => (p === "none" || (p === "google" && !withGoogle) ? sum : sum + people),
+    0,
+  );
+  const typed = Math.max(0, Math.floor(Number(count) || 0));
+  const wanted = Math.min(typed, reachable);
+  const hostMix = Object.entries(open?.providers ?? {})
+    .filter(([p]) => p !== "none")
+    .sort((a, b) => b[1] - a[1])
+    .map(([p, people]) => `${n(people)} ${p === "unknown" ? "not looked up yet" : p === "other" ? "other mail hosts" : (PROVIDER_LABEL[p] ?? p)}`)
+    .join(" · ");
+
+  /** How long a number of people takes at the daily limit for checks asked for from a list. */
+  function howLong(people: number): string {
+    const limit = open?.limit;
+    if (!limit) return "";
+    const credits = people * AVG_CREDITS;
+    const left = Math.max(0, limit - (open?.spent24h ?? 0));
+    if (credits <= left) return "should finish today";
+    const days = Math.ceil((credits - left) / limit) + 1;
+    return `about ${n(days)} days at your limit of ${n(limit)} credits a day`;
+  }
 
   async function act(path: "cancel" | "start") {
     setActing(true);
@@ -118,11 +147,16 @@ function Job() {
     }
   }
 
-  async function verify(ids: string[] | null) {
-    const count = ids ? ids.length : caOpen;
-    if (!count) return;
+  async function verify(who: { ids: string[] } | { count: number; google: boolean } | { all: true }) {
+    const people = "ids" in who ? who.ids.length : "count" in who ? who.count : caOpen;
+    if (!people) return;
+    const order =
+      "count" in who
+        ? `Best odds first: companies with a confirmed pattern, Microsoft 365, other mail hosts, biggest companies first.${who.google ? " Google mail goes last." : " Google mail is left out."}\n\n`
+        : "";
+    const time = howLong(people);
     const ok = window.confirm(
-      `Check ${n(count)} catch-all ${count === 1 ? "person" : "people"} with no2bounce?\n\nThis uses up to ${n(count * MAX_CREDITS)} credits (at most ${MAX_CREDITS} per person; it stops at the first address that works).`,
+      `Check ${"count" in who ? "the next " : ""}${n(people)} catch-all ${people === 1 ? "person" : "people"} with no2bounce?\n\n${order}This uses up to ${n(people * combos)} credits (at most ${combos} per person; it stops at the first address that works)${open?.credits != null ? `. You have ${n(open.credits)} left` : ""}.${time ? `\nIt ${time.startsWith("about") ? "takes " : ""}${time}.` : ""}`,
     );
     if (!ok) return;
     setActing(true);
@@ -130,12 +164,13 @@ function Job() {
       const res = await fetch(`/api/jobs/${id}/catch-all`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(ids ? { ids } : { all: true }),
+        body: JSON.stringify(who),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? res.statusText);
       toast(`${n(body.queued)} queued for no2bounce. Results show up here as they come in.`);
       setPicked(new Set());
+      setCount("");
       reload();
     } catch (e) {
       toast(`Could not queue them: ${(e as Error).message}`, "bad");
@@ -300,7 +335,7 @@ function Job() {
           <div className="ca-text">
             <b>Verify catch-alls with no2bounce</b>
             <span className="ca-sub">
-              Up to {MAX_CREDITS} credits a person. Confirms about 1 in 3 on Microsoft 365 and 1 in 9 on other mail hosts; Google mail almost never.
+              Up to {combos} credits a person. Confirms about 1 in 4 on Microsoft 365 and 1 in 5 on other mail hosts; Google mail almost never.
             </span>
             <span className="ca-counts">
               <span>
@@ -326,13 +361,50 @@ function Job() {
                 <Square size={12} /> Stop queued ({n(job.ca_queued)})
               </button>
             )}
-            <button className="btn" disabled={acting || chosen.length === 0} onClick={() => verify(chosen)}>
+            <button className="btn" disabled={acting || chosen.length === 0} onClick={() => verify({ ids: chosen })}>
               Verify selected ({n(chosen.length)})
             </button>
-            <button className="btn btn-primary" disabled={acting || caOpen === 0} onClick={() => verify(null)}>
-              <ShieldCheck size={14} /> Verify all not checked ({n(caOpen)})
+            <button className="btn" disabled={acting || caOpen === 0} onClick={() => verify({ all: true })}>
+              Verify all not checked ({n(caOpen)})
             </button>
           </div>
+          <form
+            className="ca-count"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!acting && wanted > 0) verify({ count: wanted, google: withGoogle });
+            }}
+          >
+            <label className="ca-count-field">
+              Check the next
+              <input
+                className="input"
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                placeholder="500"
+                aria-label="How many people to check"
+                value={count}
+                onChange={(e) => setCount(e.target.value)}
+              />
+              people
+            </label>
+            <button className="btn btn-primary" type="submit" disabled={acting || wanted === 0}>
+              <ShieldCheck size={14} /> {wanted ? `Check ${n(wanted)}` : "Check"}
+            </button>
+            {googleOpen > 0 && (
+              <label className="ca-check" title="Google mail has confirmed nobody so far, so it is left out unless you tick this">
+                <input type="checkbox" checked={withGoogle} onChange={(e) => setWithGoogle(e.target.checked)} />
+                Include Google mail ({n(googleOpen)})
+              </label>
+            )}
+            <span className="ca-sub ca-count-hint">
+              {wanted > 0
+                ? `${typed > reachable ? `Only ${n(reachable)} left to check. ` : ""}Up to ${n(wanted * combos)} credits, ${howLong(wanted) || "best odds first"}.`
+                : `Best odds first, across all pages. Not checked yet: ${hostMix || "nobody"}.`}
+            </span>
+          </form>
         </div>
       )}
 

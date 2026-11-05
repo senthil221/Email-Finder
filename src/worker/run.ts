@@ -4,7 +4,7 @@
 import type { Db } from "@/lib/db";
 import { processDomain } from "@/lib/engine";
 import { createChecker, createProviderGate, FatalError, PauseError } from "@/lib/checker";
-import { CaPause, catchAllRound, createCaChecker, type CaSource } from "@/lib/catchall";
+import { CaPause, catchAllRound, createCaChecker, lookUpMailProviders, type CaSource } from "@/lib/catchall";
 import { findAlternateDomain, mxHost, type DnsDeps } from "@/lib/dns";
 import { loadLadder, type LadderInfo } from "@/lib/ladder";
 import type { MtnClient } from "@/lib/mailtester";
@@ -360,6 +360,20 @@ export function startWorker(o: WorkerOptions) {
       }
     }
   }
+  // Free DNS, so "the next 500" really are the best odds and the app can say who runs the mail.
+  async function mailProviderPass(ca: NonNullable<WorkerOptions["catchAll"]>) {
+    const tried = new Set<string>();
+    while (!stopping && !slotsDone) {
+      let asked = 0;
+      try {
+        asked = await lookUpMailProviders({ db, mxHost: ca.mxHost ?? mxHost, tried });
+      } catch (e) {
+        log(`mail provider lookup failed: ${(e as Error).message}`);
+      }
+      if (asked) log(`mail providers: ${asked} catch-all companies looked up`);
+      else await nap(60_000);
+    }
+  }
   async function catchAllPass() {
     const ca = o.catchAll;
     if (!ca) return;
@@ -383,7 +397,7 @@ export function startWorker(o: WorkerOptions) {
       combos: ca.combos ?? 4,
     };
     await repo.setSetting(db, repo.CA_CONFIG, config).catch((e) => log(`saving catch-all settings failed: ${(e as Error).message}`));
-    await Promise.all([credits(), catchAllLoop(ca, "request"), ca.auto === false ? null : catchAllLoop(ca, "auto")]);
+    await Promise.all([credits(), mailProviderPass(ca), catchAllLoop(ca, "request"), ca.auto === false ? null : catchAllLoop(ca, "auto")]);
   }
 
   const slots = Array.from({ length: o.concurrency ?? 12 }, (_, i) => slot(i % 2 === 0));

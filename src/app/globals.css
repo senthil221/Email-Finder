@@ -405,6 +405,12 @@ input[type="checkbox"]:disabled { cursor: default; opacity: 0.3; }
 .ca-bar .ca-sub { color: var(--muted); font-size: 12.5px; }
 .ca-bar .ca-counts { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin-top: 3px; }
 .ca-bar .ca-counts b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ca-count { flex-basis: 100%; display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--line); }
+.ca-count-field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; }
+.ca-count-field .input { width: 104px; height: 34px; font-variant-numeric: tabular-nums; }
+.ca-check { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.ca-check input { accent-color: var(--accent); }
+.ca-count-hint { flex: 1; min-width: 240px; }
 
 .ca-switch { display: flex; gap: 14px; align-items: flex-start; padding: 14px; border-radius: 11px; background: var(--surface-2); box-shadow: 0 0 0 1px var(--line) inset; }
 .switch { position: relative; width: 42px; height: 24px; margin-top: 1px; border-radius: 999px; border: 0; background: var(--surface-4); box-shadow: 0 0 0 1px var(--line-strong) inset; cursor: pointer; flex: none; transition: background var(--t) var(--ease); }

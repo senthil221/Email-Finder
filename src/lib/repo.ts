@@ -411,9 +411,9 @@ export async function domainsToScrape(db: Db, skip: string[], limit = 100): Prom
 
 export async function saveScrape(db: Db, domain: string, r: ScrapeResult, mailDomain: string | null) {
   await db.query(
-    `update domains set scraped_at = now(), scrape_outcome = $2, site_emails = $3::jsonb, mail_domain = $4, updated_at = now()
+    `update domains set scraped_at = now(), scrape_outcome = $2, site_emails = $3::jsonb, mail_domain = $4, scrape_detail = $5, updated_at = now()
      where domain = $1`,
-    [domain, r.outcome, JSON.stringify(r.emails), mailDomain],
+    [domain, r.outcome, JSON.stringify(r.emails), mailDomain, r.detail ?? null],
   );
 }
 
@@ -474,13 +474,32 @@ export async function catchAllPeople(db: Db, skip: string[], limit = 200): Promi
   );
 }
 
-/** Catch-all people someone asked to verify from a list, oldest request first. */
-export async function requestedCatchAllPeople(db: Db, limit = 200): Promise<CatchAllPerson[]> {
+/**
+ * Best odds of a confirmed address first, from the live results: a company whose pattern is
+ * already confirmed, then Microsoft 365 (28% of people), other hosts (19%), Zoho (15%, few
+ * tried), not looked up yet, and Google last (none in the test). Needs `domains d`.
+ */
+const CA_ODDS = `case when d.ca_pattern is not null then 0 when d.mx_provider = 'microsoft' then 1 when d.mx_provider = 'other' then 2
+  when d.mx_provider = 'zoho' then 3 when d.mx_provider = 'google' then 5 else 4 end`;
+
+/**
+ * Catch-all people someone asked to verify from a list: oldest request first, best odds and
+ * biggest companies first within it. A company's people run one at a time (the first hit
+ * teaches the pattern), so at most `perCompany` a round leaves room for other companies alongside.
+ */
+export async function requestedCatchAllPeople(db: Db, limit = 200, perCompany = 40): Promise<CatchAllPerson[]> {
   return db.query<CatchAllPerson>(
-    `select r.id::text as id, r.first, r.last, r.domain, r.linkedin
-     from job_rows r where ${CA_QUEUED}
-     order by r.ca_requested_at, r.domain, r.id limit $1`,
-    [limit],
+    `select id, first, last, domain, linkedin from (
+       select r.id::text as id, r.id as row_id, r.first, r.last, r.domain, r.linkedin, r.ca_requested_at as asked_at,
+         ${CA_ODDS} as odds,
+         count(*) over (partition by r.domain) as company_size,
+         row_number() over (partition by r.domain order by r.id) as nth
+       from job_rows r left join domains d on d.domain = r.domain
+       where ${CA_QUEUED}
+     ) q
+     where nth <= $2
+     order by asked_at, odds, company_size desc, domain, row_id limit $1`,
+    [limit, perCompany],
   );
 }
 
@@ -498,6 +517,40 @@ export async function requestCatchAll(db: Db, jobId: string, ids: string[] | nul
     [jobId, ids],
   );
   return rows.length;
+}
+
+/**
+ * Ask for the next `count` catch-all people in a job, best odds and biggest companies first.
+ * Left out: companies where no2bounce says yes to anything or there is no mail server any
+ * more, and Google mail unless `google` is set (it has confirmed nobody). Returns how many were queued.
+ */
+export async function requestCatchAllCount(db: Db, jobId: string, count: number, opts: { google?: boolean } = {}): Promise<number> {
+  const rows = await db.query(
+    `update job_rows set ca_requested_at = now()
+     where id in (
+       select r.id from job_rows r left join domains d on d.domain = r.domain
+       where r.job_id = $1 and r.status = 'catch_all' and r.ca_checked_at is null and r.ca_requested_at is null
+         and d.ca_accepts_all is not true and d.mx_provider is distinct from 'none'
+         and ($3::boolean or d.mx_provider is distinct from 'google')
+       order by ${CA_ODDS}, count(*) over (partition by r.domain) desc, r.domain, r.id
+       limit $2
+     )
+     returning id`,
+    [jobId, count, opts.google === true],
+  );
+  return rows.length;
+}
+
+/** Catch-all companies whose mail provider nobody has looked up yet (free DNS), leaving out `skip`. */
+export async function catchAllCompaniesToLookUp(db: Db, skip: string[], limit = 200): Promise<string[]> {
+  const rows = await db.query<{ domain: string }>(
+    `select d.domain from domains d
+     where d.mx_provider is null and not (d.domain = any($1::text[]))
+       and exists (select 1 from job_rows r where r.domain = d.domain and r.status = 'catch_all' and r.ca_checked_at is null)
+     limit $2`,
+    [skip, limit],
+  );
+  return rows.map((r) => r.domain);
 }
 
 /**

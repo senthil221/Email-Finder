@@ -1,6 +1,6 @@
 import { getJob, listRows } from "@/lib/repo";
 import { bad, db, isUuid } from "@/lib/server";
-import { jobRate, recentlyDecided } from "@/lib/views";
+import { catchAllOpen, jobRate, recentlyDecided } from "@/lib/views";
 
 export const dynamic = "force-dynamic";
 
@@ -18,12 +18,13 @@ export async function GET(req: Request, ctx: RouteContext<"/api/jobs/[id]">) {
   const size = Math.min(500, Math.max(1, Number(url.searchParams.get("size")) || 100));
   const page = Math.max(0, Number(url.searchParams.get("page")) || 0);
   const q = url.searchParams.get("q")?.trim().toLowerCase().slice(0, 100) || undefined;
-  const [rows, rate, recent] = await Promise.all([
+  const [rows, rate, recent, caOpen] = await Promise.all([
     listRows(d, id, { status: status && STATUSES.has(status) ? status : undefined, q, limit: size, offset: page * size }),
     jobRate(d, id),
     recentlyDecided(d, id),
+    status === "catch_all" ? catchAllOpen(d, id) : null,
   ]);
   // People per minute over the last 5 minutes -> minutes left.
   const etaMinutes = rate > 0 && job.pending > 0 ? job.pending / rate : null;
-  return Response.json({ job, rows, rate, etaMinutes, recent });
+  return Response.json({ job, rows, rate, etaMinutes, recent, caOpen });
 }

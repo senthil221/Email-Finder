@@ -1,7 +1,7 @@
 // Read-only queries behind the live screens: dashboard, feeds, lookup ladder, domains, catch-alls.
 import type { Db } from "./db";
 import { candidates } from "./patterns";
-import { CA_AUTO, CA_CONFIG, getDomain, getSetting, type CaConfig, type JobRow } from "./repo";
+import { CA_AUTO, CA_CONFIG, getDomain, getSetting, n2bCredits24h, type CaConfig, type JobRow } from "./repo";
 
 export type FeedItem = { id: string; email: string; verdict: string; message: string | null; created_at: string };
 
@@ -181,6 +181,8 @@ export type DomainView = {
   found: number;
   /** Website pass: ok | robots | blocked | down, null until the site was read. */
   scrape_outcome: string | null;
+  /** What the site actually answered, in plain words. Null for sites read before this was kept. */
+  scrape_detail: string | null;
   scraped_at: string | null;
   site_emails: string[] | null;
   mail_domain: string | null;
@@ -217,7 +219,7 @@ export async function listDomains(
   const siteWhere = o.site ? SITE_FILTERS[o.site] : "true";
   const [rows, counts, [site]] = await Promise.all([
     db.query<DomainView>(
-      `select d.domain, d.status, d.pattern, d.checked_at, d.scrape_outcome, d.scraped_at, d.site_emails, d.mail_domain,
+      `select d.domain, d.status, d.pattern, d.checked_at, d.scrape_outcome, d.scrape_detail, d.scraped_at, d.site_emails, d.mail_domain,
               count(r.id)::int as people, count(r.id) filter (where r.status = 'found')::int as found,
               count(r.id) filter (where r.status = 'found' and r.reason = 'website')::int as found_website,
               count(*) over ()::int as total
@@ -399,6 +401,41 @@ const COUNTS = `count(*)::int as people,
   count(*) filter (where r.status = 'catch_all' and r.ca_checked_at is null and r.ca_requested_at is not null)::int as queued,
   count(*) filter (where r.ca_checked_at is not null)::int as checked,
   count(*) filter (where r.status = 'found')::int as confirmed`;
+
+/** What the "check the next N" box on a list needs: who is left, and what it would cost. */
+export type CatchAllOpen = {
+  /** People not checked or queued yet, by mail provider ("unknown" = not looked up yet). */
+  providers: Record<string, number>;
+  /** Credits a day for checks asked for from a list, and spent on them in the last 24 hours. */
+  limit: number | null;
+  spent24h: number;
+  /** Most combinations tried per person. */
+  combos: number;
+  credits: number | null;
+};
+
+export async function catchAllOpen(db: Db, jobId: string): Promise<CatchAllOpen> {
+  const [rows, config, spent, [w]] = await Promise.all([
+    db.query<{ provider: string; n: number }>(
+      `select coalesce(d.mx_provider, 'unknown') as provider, count(*)::int as n
+       from job_rows r left join domains d on d.domain = r.domain
+       where r.job_id = $1 and r.status = 'catch_all' and r.ca_checked_at is null and r.ca_requested_at is null
+         and d.ca_accepts_all is not true
+       group by 1`,
+      [jobId],
+    ),
+    getSetting<CaConfig>(db, CA_CONFIG),
+    n2bCredits24h(db, "request"),
+    db.query<{ n2b_credits: number | null }>(`select n2b_credits from worker_status where id = 1`),
+  ]);
+  return {
+    providers: Object.fromEntries(rows.map((r) => [r.provider, r.n])),
+    limit: config?.requestLimit ?? null,
+    spent24h: spent,
+    combos: config?.combos ?? 4,
+    credits: w?.n2b_credits ?? null,
+  };
+}
 
 export async function catchAllView(db: Db): Promise<CatchAllView> {
   const [auto, config, [totals], [flight], spent, [w], providers, lists, recent] = await Promise.all([

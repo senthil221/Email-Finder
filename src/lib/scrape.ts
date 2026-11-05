@@ -14,12 +14,16 @@ export type ScrapeResult = {
   /** Every address found on the pages, lowercased and deduplicated (capped). */
   emails: string[];
   pages: number;
+  /** The outcome in plain words: what the site actually answered ("HTTP 403", "domain does not exist"). */
+  detail?: string;
 };
 
 export type Fetcher = (url: string, init: { signal: AbortSignal; headers: Record<string, string> }) => Promise<Response>;
 
 const MAX_EMAILS = 50;
 const MAX_BYTES = 1_500_000;
+
+export const ROBOTS_DETAIL = "Its robots.txt tells bots to stay out, so we leave it alone";
 
 // Addresses on these are personal mailboxes, not a company mail domain.
 export const FREEMAIL = new Set([
@@ -229,8 +233,53 @@ async function readCapped(res: Response): Promise<string> {
   return new TextDecoder("utf-8", { fatal: false }).decode(Buffer.concat(chunks));
 }
 
-const isChallenge = (res: Response, body: string) =>
-  res.headers.get("cf-mitigated") === "challenge" || /just a moment\.\.\.|cf-browser-verification|captcha/i.test(body.slice(0, 5000));
+/**
+ * A bot check shown instead of the page, in plain words; null for a normal page. The word
+ * "captcha" alone is not enough: many ordinary sites load reCAPTCHA for their contact form.
+ */
+function botCheck(res: Response, body: string): string | null {
+  const head = body.slice(0, 5000);
+  if (res.headers.get("cf-mitigated") === "challenge" || /just a moment\.\.\.|cf-browser-verification/i.test(head)) {
+    return "Cloudflare shows a bot check instead of the page";
+  }
+  if (/<title[^>]*>[^<]*(captcha|attention required|access denied|security check|are you (a )?human)/i.test(head)) {
+    return "The site shows a bot check instead of the page";
+  }
+  return null;
+}
+
+const refused = (res: Response) => res.status === 403 || res.status === 429;
+
+function whyBlocked(res: Response, body: string): string {
+  return (
+    botCheck(res, body) ??
+    (res.status === 429 ? "Too many requests: the site is limiting readers (HTTP 429)" : "The site refuses automated readers (HTTP 403)")
+  );
+}
+
+function whyError(status: number): string {
+  if (status === 401) return "The site is password protected (HTTP 401)";
+  if (status === 404 || status === 410) return `No home page at this address (HTTP ${status})`;
+  if (status >= 500) return `The site's server is failing (HTTP ${status})`;
+  return `The site answered with an error (HTTP ${status})`;
+}
+
+/** Why a site gave no answer at all, from what Node's fetch reports. */
+export function whyNoAnswer(e: unknown): string {
+  const err = e as { name?: string; code?: string; message?: string; cause?: { code?: string; message?: string } } | null;
+  const code = err?.cause?.code ?? err?.code ?? "";
+  const words = `${err?.cause?.message ?? ""} ${err?.message ?? ""}`;
+  if (err?.name === "TimeoutError" || err?.name === "AbortError" || /TIMEOUT|ETIMEDOUT/.test(code)) {
+    return "Timed out: no answer in 10 seconds (slow, or quietly ignoring bots)";
+  }
+  if (code === "ENOTFOUND" || code === "ENODATA") return "No website: the domain has no web address in DNS";
+  if (code === "EAI_AGAIN" || code === "ESERVFAIL") return "DNS lookup failed for this domain";
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_SSL|ERR_TLS|EPROTO/.test(code)) return "The site's security certificate is broken or expired";
+  if (code === "ECONNREFUSED" || /ECONNREFUSED/.test(words)) return "The server refused the connection";
+  if (code === "ECONNRESET" || code === "UND_ERR_SOCKET" || code === "EPIPE") return "The server dropped the connection";
+  if (/redirect/i.test(words)) return "The site redirects in a loop";
+  return "No answer from the server";
+}
 
 /** Read a company's public pages for the addresses it publishes. Never throws. */
 export async function scrapeSite(
@@ -250,20 +299,21 @@ export async function scrapeSite(
 
   // Home page first (https, then http): it tells us where the site really lives.
   let home: { res: Response; body: string } | null = null;
+  let failure: unknown = null;
   for (const scheme of ["https", "http"]) {
     try {
       home = await load(`${scheme}://${domain}/`);
       break;
-    } catch {
-      // next scheme
+    } catch (e) {
+      failure ??= e; // next scheme
     }
   }
-  if (!home) return { outcome: "down", host: null, emails: [], pages: 0 };
+  if (!home) return { outcome: "down", host: null, emails: [], pages: 0, detail: whyNoAnswer(failure) };
   const host = cleanDomain(home.res.url) || null;
-  if (home.res.status === 403 || home.res.status === 429 || isChallenge(home.res, home.body)) {
-    return { outcome: "blocked", host, emails: [], pages: 0 };
+  if (refused(home.res) || botCheck(home.res, home.body)) {
+    return { outcome: "blocked", host, emails: [], pages: 0, detail: whyBlocked(home.res, home.body) };
   }
-  if (!home.res.ok) return { outcome: "down", host, emails: [], pages: 0 };
+  if (!home.res.ok) return { outcome: "down", host, emails: [], pages: 0, detail: whyError(home.res.status) };
 
   // robots.txt decides which of the other pages we may read.
   const origin = new URL(home.res.url).origin;
@@ -276,7 +326,7 @@ export async function scrapeSite(
     // no robots.txt: everything allowed
   }
   if (!robotsAllows(robots, new URL(home.res.url).pathname || "/")) {
-    return { outcome: "robots", host, emails: [], pages: 0 };
+    return { outcome: "robots", host, emails: [], pages: 0, detail: ROBOTS_DETAIL };
   }
 
   const emails = new Set(extractEmails(home.body));
@@ -288,7 +338,7 @@ export async function scrapeSite(
     await sleep(opts.pageDelayMs ?? 1_500);
     try {
       const page = await load(url);
-      if (page.res.status === 403 || page.res.status === 429 || isChallenge(page.res, page.body)) break; // back off
+      if (refused(page.res) || botCheck(page.res, page.body)) break; // back off
       if (!page.res.ok) continue;
       pages++;
       for (const e of extractEmails(page.body)) emails.add(e);
@@ -297,5 +347,12 @@ export async function scrapeSite(
     }
     if (emails.size >= MAX_EMAILS) break;
   }
-  return { outcome: "ok", host, emails: [...emails].slice(0, MAX_EMAILS), pages };
+  const found = Math.min(emails.size, MAX_EMAILS);
+  return {
+    outcome: "ok",
+    host,
+    emails: [...emails].slice(0, MAX_EMAILS),
+    pages,
+    detail: `Read ${pages} ${pages === 1 ? "page" : "pages"}, ${found ? `${found} ${found === 1 ? "address" : "addresses"} published` : "no addresses published"}`,
+  };
 }

@@ -2,7 +2,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { ArrowRight, AtSign, ChevronDown, Globe, MailCheck, Search, ShieldOff, Shuffle } from "lucide-react";
 import type { DomainView, SiteFilter, SiteTotals } from "@/lib/views";
-import { ROLE_LOCALS } from "@/lib/scrape";
+import { ROBOTS_DETAIL, ROLE_LOCALS } from "@/lib/scrape";
 import { usePoll } from "@/components/usePoll";
 import { Ago, Chip, CountUp, PageHead, Pager, Seg } from "@/components/ui";
 import { n, PATTERN_LABEL } from "@/components/format";
@@ -29,6 +29,18 @@ const OUTCOME: Record<string, [chip: string, label: string]> = {
   robots: ["catch_all", "No bots"],
   down: ["skipped", "Down"],
 };
+
+/** The website outcome in plain words. Sites read before exact reasons were kept get the general one. */
+function whyWebsite(d: DomainView): string {
+  if (!d.scrape_outcome) return "Read only when someone here still needs an email";
+  if (d.scrape_detail) return d.scrape_detail;
+  const emails = d.site_emails?.length ?? 0;
+  if (d.scrape_outcome === "ok") return emails ? `Opened fine, ${emails === 1 ? "1 address" : `${n(emails)} addresses`} published` : "Opened fine, no addresses published";
+  if (d.scrape_outcome === "blocked") return "The site refused our reader (a 403, a 429 or a bot check)";
+  if (d.scrape_outcome === "robots") return ROBOTS_DETAIL;
+  if (d.scrape_outcome === "down") return "The site did not load (no answer or a server error)";
+  return d.scrape_outcome;
+}
 
 type Data = {
   rows: DomainView[];
@@ -137,6 +149,12 @@ export default function DomainsPage() {
         </div>
       </div>
 
+      {site === "unread" && (
+        <div className="notice rise" style={{ ["--i" as string]: 2 }}>
+          This only means no free addresses from the company&apos;s own site. Everyone here is still checked with MailTester as usual.
+        </div>
+      )}
+
       <div className="tbl-wrap rise" style={{ ["--i" as string]: 2 }}>
         <table className="tbl">
           <thead>
@@ -145,6 +163,7 @@ export default function DomainsPage() {
               <th>Status</th>
               <th>Company pattern</th>
               <th>Website</th>
+              <th title="What happened when the website pass tried to read this company's site">Why</th>
               <th className="r">People</th>
               <th className="r">Found</th>
               <th style={{ width: 140 }}>Hit rate</th>
@@ -179,7 +198,7 @@ export default function DomainsPage() {
                       {d.scrape_outcome ? (
                         <span className="row" style={{ gap: 6, flexWrap: "wrap" }}>
                           <Chip status={chip}>{label}</Chip>
-                          {emails.length > 0 && <span className="tag">{emails.length} emails</span>}
+                          {emails.length > 0 && <span className="tag">{emails.length} {emails.length === 1 ? "email" : "emails"}</span>}
                           {d.mail_domain && (
                             <span className="tag" title="The website's addresses use this domain for mail">
                               <ArrowRight size={11} /> {d.mail_domain}
@@ -194,6 +213,9 @@ export default function DomainsPage() {
                       ) : (
                         <span className="faint">Not read yet</span>
                       )}
+                    </td>
+                    <td className="muted" style={{ fontSize: 12, minWidth: 220, maxWidth: 340, whiteSpace: "normal", lineHeight: 1.35 }}>
+                      {whyWebsite(d)}
                     </td>
                     <td className="r num">{n(d.people)}</td>
                     <td className={`r num${d.found ? "" : " zero"}`} style={{ color: d.found ? "var(--ok-ink)" : undefined }}>
@@ -215,7 +237,7 @@ export default function DomainsPage() {
                   </tr>
                   {isOpen && (
                     <tr>
-                      <td colSpan={8} style={{ background: "var(--surface-2)" }}>
+                      <td colSpan={9} style={{ background: "var(--surface-2)" }}>
                         <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }}>
                           <span className="faint" style={{ fontSize: 12 }}>
                             Published on {d.domain}
